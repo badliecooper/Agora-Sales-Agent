@@ -205,7 +205,7 @@ export async function POST(request: NextRequest) {
       state: 'RUNNING',
     } as AgentResponse);
   } catch (error) {
-    console.error('Error starting conversation:', error);
+    console.error('[/api/invite-agent] Error inviting AI agent to conversation:', error);
     return NextResponse.json(
       {
         error:

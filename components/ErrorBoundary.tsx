@@ -11,6 +11,7 @@ interface ErrorBoundaryProps {
 interface ErrorBoundaryState {
   hasError: boolean;
   error?: Error;
+  errorInfo?: React.ErrorInfo;
 }
 
 export class ErrorBoundary extends React.Component<
@@ -28,6 +29,7 @@ export class ErrorBoundary extends React.Component<
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error('ErrorBoundary caught an error:', error, errorInfo);
+    this.setState({ errorInfo });
   }
 
   render() {
@@ -37,15 +39,32 @@ export class ErrorBoundary extends React.Component<
       }
 
       return (
-        // Last-resort recovery UI for client-only conversation failures.
+        // Last-resort recovery UI with detailed diagnostic information.
         <div className="flex flex-col items-center justify-center min-h-[320px] p-8 text-center">
-          <div className="max-w-md">
+          <div className="max-w-2xl w-full">
             <h2 className="text-lg font-semibold text-destructive mb-4">
               Something went wrong
             </h2>
-            <p className="text-muted-foreground text-sm mb-6">
-              An error occurred while loading the conversation. Please try refreshing the page.
+            <p className="text-muted-foreground text-sm mb-4">
+              An error occurred while loading the conversation.
             </p>
+            {this.state.error && (
+              <div className="mb-6 p-4 bg-destructive/10 border border-destructive/20 rounded-lg text-left overflow-auto max-h-96">
+                <p className="font-mono text-xs text-destructive font-bold mb-2">
+                  {this.state.error.name}: {this.state.error.message}
+                </p>
+                {this.state.error.stack && (
+                  <pre className="font-mono text-[11px] text-muted-foreground whitespace-pre-wrap mb-2">
+                    {this.state.error.stack}
+                  </pre>
+                )}
+                {this.state.errorInfo?.componentStack && (
+                  <pre className="font-mono text-[11px] text-destructive/80 whitespace-pre-wrap">
+                    {this.state.errorInfo.componentStack}
+                  </pre>
+                )}
+              </div>
+            )}
             <Button onClick={() => window.location.reload()}>
               Refresh Page
             </Button>

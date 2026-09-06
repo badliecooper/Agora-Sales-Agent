@@ -4,12 +4,13 @@ import tseslint from 'typescript-eslint';
 /** @type {import('eslint').Linter.Config[]} */
 const config = [
   {
-    ignores: ['.next/**', 'node_modules/**', 'scripts/**', 'dist/**', 'out/**'],
+    ignores: ['.next/**', '.vercel/**', 'node_modules/**', 'scripts/**', 'dist/**', 'out/**'],
   },
   ...coreWebVitals,
   {
     plugins: {
       '@typescript-eslint': tseslint.plugin,
+      'react-hooks': coreWebVitals[0].plugins['react-hooks'],
     },
     rules: {
       // These patterns — syncing external SDK state into React state inside useEffect — are

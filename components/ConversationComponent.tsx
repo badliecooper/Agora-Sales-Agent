@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import AgoraRTC, {
+  AgoraRTCProvider,
   useRTCClient,
   useLocalMicrophoneTrack,
   useRemoteUsers,
@@ -95,7 +96,7 @@ function isRtmSalStatusPayload(value: unknown): value is RtmSalStatusPayload {
   );
 }
 
-export default function ConversationComponent({
+function ConversationInner({
   agoraData,
   rtmClient,
   onTokenWillExpire,
@@ -166,7 +167,7 @@ export default function ConversationComponent({
     };
   }, []);
 
-  const { isConnected: joinSuccess } = useJoin(
+  const { isConnected: joinSuccess, error: joinError } = useJoin(
     {
       appid: process.env.NEXT_PUBLIC_AGORA_APP_ID!,
       channel: agoraData.channel,
@@ -175,6 +176,14 @@ export default function ConversationComponent({
     },
     isReady,
   );
+
+  useEffect(() => {
+    if (joinError) {
+      console.error('[Agora RTC] useJoin failed:', joinError);
+    } else if (joinSuccess) {
+      console.log('[Agora RTC] useJoin connected successfully, channel:', agoraData.channel);
+    }
+  }, [joinSuccess, joinError, agoraData.channel]);
 
   // Create mic track only after the StrictMode fake-unmount cycle completes (isReady).
   // Passing `true` here creates two tracks in StrictMode — the first publishes, then
@@ -192,6 +201,14 @@ export default function ConversationComponent({
   }, [selectedMicrophoneId, useRawAudio]);
 
   const { localMicrophoneTrack, error: micError } = useLocalMicrophoneTrack(isReady, audioTrackConfig);
+
+  useEffect(() => {
+    if (micError) {
+      console.error('[Microphone] Initialization error:', micError);
+    } else if (localMicrophoneTrack) {
+      console.log('[Microphone] Initialized track successfully, label:', localMicrophoneTrack.getTrackLabel());
+    }
+  }, [micError, localMicrophoneTrack]);
 
   // If standard capture fails with NOT_READABLE, auto-retry with raw audio (disabling AEC/ANS which conflicts with Nahimic/Realtek drivers)
   useEffect(() => {
@@ -253,12 +270,14 @@ export default function ConversationComponent({
 
     (async () => {
       try {
+        console.log('[AgoraVoiceAI] Initializing toolkit for channel:', agoraData.channel);
         const ai = await AgoraVoiceAI.init({
           rtcEngine: client,
           rtmConfig: rtmClient ? { rtmEngine: rtmClient } : undefined,
           renderMode: TranscriptHelperMode.TEXT,
           enableLog: true,
         });
+        console.log('[AgoraVoiceAI] Toolkit initialized successfully');
 
         if (cancelled) {
           try {
@@ -1014,6 +1033,22 @@ export default function ConversationComponent({
         onClose={handleDetailsClose}
       />
     </>
+  );
+}
+
+export default function ConversationComponent(props: ConversationComponentProps) {
+  const [rtcClient] = useState(() => {
+    console.log('[ConversationComponent] Initializing AgoraRTC client instance (mode: rtc, codec: vp8)');
+    return AgoraRTC.createClient({
+      mode: 'rtc',
+      codec: 'vp8',
+    });
+  });
+
+  return (
+    <AgoraRTCProvider client={rtcClient}>
+      <ConversationInner {...props} />
+    </AgoraRTCProvider>
   );
 }
 

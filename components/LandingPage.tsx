@@ -19,41 +19,6 @@ const ConversationComponent = dynamic(() => import('./ConversationComponent'), {
   ssr: false,
 });
 
-// Dynamically import AgoraRTCProvider (browser-only).
-// The AgoraVoiceAI toolkit is initialized inside ConversationComponent after
-// the RTC join succeeds, so this wrapper only needs to provide the RTC client.
-const AgoraProvider = dynamic(
-  async () => {
-    const { AgoraRTCProvider, default: AgoraRTC } =
-      await import('agora-rtc-react');
-    return {
-      default: function AgoraProviders({
-        children,
-      }: {
-        children: React.ReactNode;
-      }) {
-        // useRef persists across StrictMode's simulated unmount/remount, so only
-        // one RTC client is ever created per session (useMemo creates two in StrictMode).
-        const clientRef = useRef<ReturnType<
-          typeof AgoraRTC.createClient
-        > | null>(null);
-        if (!clientRef.current) {
-          clientRef.current = AgoraRTC.createClient({
-            mode: 'rtc',
-            codec: 'vp8',
-          });
-        }
-        return (
-          <AgoraRTCProvider client={clientRef.current}>
-            {children}
-          </AgoraRTCProvider>
-        );
-      },
-    };
-  },
-  { ssr: false },
-);
-
 export default function LandingPage() {
   const [showConversation, setShowConversation] = useState(false);
 
@@ -77,16 +42,17 @@ export default function LandingPage() {
 
     try {
       // 1. Fetch RTC token + channel
-      // console.log('Fetching Agora token...');
+      console.log('[/api/generate-agora-token] Requesting Agora RTC/RTM token...');
       const agoraResponse = await fetch('/api/generate-agora-token');
       const responseData = await agoraResponse.json();
-      // console.log('Agora token response: uid =', responseData.uid, 'channel =', responseData.channel);
 
       if (!agoraResponse.ok) {
+        console.error('[/api/generate-agora-token] Failed with status:', agoraResponse.status, responseData);
         throw new Error(
           `Failed to generate Agora token: ${JSON.stringify(responseData)}`,
         );
       }
+      console.log('[/api/generate-agora-token] Token received successfully. uid:', responseData.uid, 'channel:', responseData.channel);
 
       // 2. Run agent invite and RTM setup in parallel — both only need the token response.
       //    RTM must be ready before ConversationComponent mounts so AgoraVoiceAI
@@ -103,19 +69,23 @@ export default function LandingPage() {
         })
           .then(async (res) => {
             if (!res.ok) {
+              const errBody = await res.text().catch(() => '');
+              console.error('[/api/invite-agent] Agent invite failed with status:', res.status, errBody);
               setAgentJoinError(true);
               return null;
             }
-            return res.json() as Promise<AgentResponse>;
+            const agentRes = await res.json() as AgentResponse;
+            console.log('[/api/invite-agent] Agent successfully joined channel. agent_id:', agentRes.agent_id);
+            return agentRes;
           })
           .catch((err) => {
-            console.error('Failed to start conversation with agent:', err);
+            console.error('[/api/invite-agent] Network or runtime exception starting conversation with agent:', err);
             setAgentJoinError(true);
             return null;
           }),
 
         // 2b. Set up RTM (dynamically imported to keep it client-only)
-        // Wrapped in a 3s timeout so a hung login doesn't freeze the UI.
+        // Wrapped in a 10s timeout so a hung login doesn't freeze the UI.
         // If RTM succeeds, rtm client is provided for signaling.
         // If RTM fails or times out, gracefully continue with RTC voice conversation.
         (async (): Promise<RTMClient | null> => {
@@ -123,7 +93,7 @@ export default function LandingPage() {
           const rtmSetup = async (): Promise<RTMClient | null> => {
             console.log('[RTM] Importing agora-rtm...');
             const { default: AgoraRTM } = await import('agora-rtm');
-            console.log('[RTM] Creating RTM client, uid:', responseData.uid);
+            console.log('[RTM] Creating RTM client for uid:', responseData.uid);
             const rtm: RTMClient = new AgoraRTM.RTM(
               process.env.NEXT_PUBLIC_AGORA_APP_ID!,
               responseData.uid,
@@ -137,15 +107,15 @@ export default function LandingPage() {
               const loginRes = await rtm.login({ token: rtmToken });
               console.log('[RTM] Logged in successfully:', loginRes);
             } catch (loginErr) {
-              console.warn('[RTM] Login failed:', loginErr);
+              console.error('[RTM] Login failed:', loginErr);
               return null;
             }
             console.log('[RTM] Subscribing to channel:', responseData.channel);
             try {
               const subRes = await rtm.subscribe(responseData.channel);
-              console.log('[RTM] Subscribed successfully:', subRes);
+              console.log('[RTM] Subscribed successfully to channel:', responseData.channel, subRes);
             } catch (subErr) {
-              console.warn('[RTM] Subscribe failed:', subErr);
+              console.error('[RTM] Subscribe failed for channel:', responseData.channel, subErr);
               return null;
             }
             console.log('[RTM] Ready, channel:', responseData.channel);
@@ -162,7 +132,7 @@ export default function LandingPage() {
             );
             return await Promise.race([rtmSetup(), timeout]);
           } catch (rtmErr) {
-            console.warn('[RTM] Non-fatal RTM error. Gracefully continuing in RTC voice mode:', rtmErr);
+            console.error('[RTM] Non-fatal RTM error. Gracefully continuing in RTC voice mode:', rtmErr);
             return null;
           }
         })(),
@@ -303,19 +273,17 @@ export default function LandingPage() {
                   as expected.
                 </div>
               )}
-              {/* Browser-only conversation mount: RTC provider, error boundary, and lazy-loaded call UI. */}
-              <Suspense fallback={<LoadingSkeleton />}>
-                <ErrorBoundary>
-                  <AgoraProvider>
-                    <ConversationComponent
-                      agoraData={agoraData}
-                      rtmClient={rtmClient}
-                      onTokenWillExpire={handleTokenWillExpire}
-                      onEndConversation={handleEndConversation}
-                    />
-                  </AgoraProvider>
-                </ErrorBoundary>
-              </Suspense>
+              {/* Browser-only conversation mount: ErrorBoundary, Suspense, and lazy-loaded call UI. */}
+              <ErrorBoundary>
+                <Suspense fallback={<LoadingSkeleton />}>
+                  <ConversationComponent
+                    agoraData={agoraData}
+                    rtmClient={rtmClient}
+                    onTokenWillExpire={handleTokenWillExpire}
+                    onEndConversation={handleEndConversation}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             </>
           ) : (
             /* Fallback if session bootstrap partially succeeded but required state is missing. */
