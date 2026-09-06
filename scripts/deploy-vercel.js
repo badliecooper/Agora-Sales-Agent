@@ -22,7 +22,7 @@ if (!lines.some(l => l.startsWith('DEFAULT_TIMEZONE'))) {
   envArgs.push('-b', 'DEFAULT_TIMEZONE=Asia/Kolkata');
 }
 
-const args = ['deploy', '--temporary', '--yes', '--archive=tgz', ...envArgs];
+const args = ['deploy', '--temporary', '--yes', ...envArgs];
 console.log('Spawning vercel with arguments count:', args.length);
 
 const proc = spawn('vercel.cmd', args, { stdio: 'inherit', shell: true });
