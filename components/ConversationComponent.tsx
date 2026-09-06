@@ -23,8 +23,8 @@ import {
   type UserTranscription,
   type AgentTranscription,
 } from 'agora-agent-client-toolkit';
-import { AgentVisualizer } from 'agora-agent-uikit';
-import { MicButtonWithVisualizer } from 'agora-agent-uikit/rtc';
+import { AgentVisualizer } from './AgentVisualizer';
+import { MicButtonWithVisualizer } from './MicButtonWithVisualizer';
 import { DEFAULT_AGENT_UID } from '@/lib/agora';
 import {
   getCurrentInProgressMessage,
@@ -96,12 +96,39 @@ function isRtmSalStatusPayload(value: unknown): value is RtmSalStatusPayload {
   );
 }
 
+console.log('[DEBUG MODULE COMPONENT TYPES]', {
+  AgoraRTCProvider: typeof AgoraRTCProvider,
+  RemoteUser: typeof RemoteUser,
+  AgentVisualizer: typeof AgentVisualizer,
+  MicButtonWithVisualizer: typeof MicButtonWithVisualizer,
+  MicrophoneSelector: typeof MicrophoneSelector,
+  ConnectionStatusPanel: typeof ConnectionStatusPanel,
+  QuickstartConversationLayout: typeof QuickstartConversationLayout,
+  QuickstartPipelineMetrics: typeof QuickstartPipelineMetrics,
+  QuickstartTranscriptPanel: typeof QuickstartTranscriptPanel,
+  SalesIntelligenceDashboard: typeof SalesIntelligenceDashboard,
+  CustomerDetailsModal: typeof CustomerDetailsModal,
+});
+
 function ConversationInner({
   agoraData,
   rtmClient,
   onTokenWillExpire,
   onEndConversation,
 }: ConversationComponentProps) {
+  console.log('[DEBUG ConversationInner RENDER]', {
+    AgoraRTCProvider: typeof AgoraRTCProvider,
+    RemoteUser: typeof RemoteUser,
+    AgentVisualizer: typeof AgentVisualizer,
+    MicButtonWithVisualizer: typeof MicButtonWithVisualizer,
+    MicrophoneSelector: typeof MicrophoneSelector,
+    ConnectionStatusPanel: typeof ConnectionStatusPanel,
+    QuickstartConversationLayout: typeof QuickstartConversationLayout,
+    QuickstartPipelineMetrics: typeof QuickstartPipelineMetrics,
+    QuickstartTranscriptPanel: typeof QuickstartTranscriptPanel,
+    SalesIntelligenceDashboard: typeof SalesIntelligenceDashboard,
+    CustomerDetailsModal: typeof CustomerDetailsModal,
+  });
   const client = useRTCClient();
   const remoteUsers = useRemoteUsers();
   const [isEnabled, setIsEnabled] = useState(true);

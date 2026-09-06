@@ -5,10 +5,22 @@ import {
   type TranscriptHelperItem,
   type UserTranscription,
 } from 'agora-agent-client-toolkit';
-import {
-  type AgentVisualizerState,
-  type IMessageListItem,
-} from 'agora-agent-uikit';
+export type AgentVisualizerState =
+  | 'not-joined'
+  | 'joining'
+  | 'ambient'
+  | 'listening'
+  | 'analyzing'
+  | 'talking'
+  | 'disconnected';
+
+export interface IMessageListItem {
+  turn_id?: string | number;
+  uid: number;
+  text: string;
+  status: string;
+  createdAt?: number;
+}
 
 // Fixes compacted punctuation emitted by some TTS/ASR providers where sentence-ending
 // characters run directly into the next word (e.g. "Hello.World" → "Hello. World").
