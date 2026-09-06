@@ -198,8 +198,8 @@ export async function processSalesBrain(
     updatedState.confirmationEmailStatus = updatedState.appointment.emailStatus;
     updatedState.emailSentAt = updatedState.appointment.emailSentAt;
 
-    if (updatedState.meetingStatus === 'failed' || updatedState.meetingStatus === 'slot_proposed') {
-      updatedState.nextBestAction = `arrange_demo: propose_meeting_slot: ${updatedState.appointment.lastError || "That time isn't available because you already have another event scheduled then. Please choose another time."}`;
+    if (updatedState.meetingStatus === 'failed' && updatedState.appointment.lastError) {
+      updatedState.nextBestAction = `arrange_demo: propose_meeting_slot: ${updatedState.appointment.lastError}`;
     } else if (updatedState.meetingUrl && updatedState.nextBestAction && updatedState.nextBestAction.includes('mock-meet:')) {
       updatedState.nextBestAction = updatedState.nextBestAction.replace(/mock-meet:room-[^\s]+/g, updatedState.meetingUrl);
     }

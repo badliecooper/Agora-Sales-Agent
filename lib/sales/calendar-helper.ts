@@ -610,7 +610,9 @@ export function updateAppointmentState(
     console.log('[Calendar Debug] Timezone:', targetTz);
 
     // Call availability check on complete requested time window
-    const availResult = checkMockAvailability(startIso, endIso);
+    const availResult = process.env.CALENDAR_MOCK_MODE === 'true'
+      ? checkMockAvailability(startIso, endIso)
+      : { available: true };
 
     if (!availResult.available) {
       // OCCUPIED: Do NOT create calendar event. Clearly inform user of conflict.
@@ -694,7 +696,9 @@ export function updateAppointmentState(
     customerEmail &&
     isValidCustomerEmail(customerEmail)
   ) {
-    const isAvail = checkMockAvailability(state.selectedSlot.start, state.selectedSlot.end);
+    const isAvail = process.env.CALENDAR_MOCK_MODE === 'true'
+      ? checkMockAvailability(state.selectedSlot.start, state.selectedSlot.end)
+      : { available: true };
     if (isAvail.available) {
       state.startTime = state.selectedSlot.start;
       state.endTime = state.selectedSlot.end;

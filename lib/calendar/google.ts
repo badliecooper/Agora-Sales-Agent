@@ -242,20 +242,10 @@ export async function checkCalendarAvailability(
   const calendarId = (input.calendarId || process.env.GOOGLE_CALENDAR_ID || envLocal.GOOGLE_CALENDAR_ID || 'primary').trim();
 
   if (token) {
-    console.log('[CALENDAR] LIVE CALENDAR MODE = REAL');
-    console.log(`[CALENDAR] [VOICE TOOL] checkCalendarAvailability called`);
-    console.log(`[CALENDAR] requested date: ${input.date}`);
-    console.log(`[CALENDAR] requested time: ${input.startTime}`);
-    console.log(`[CALENDAR] timezone: ${targetTimezone}`);
-    console.log(`[CALENDAR] calendar ID: ${calendarId}`);
-    console.log(`[CALENDAR] calendarStart: ${startIso}`);
-    console.log(`[CALENDAR] calendarEnd: ${endIso}`);
-    console.log(`[CALENDAR] freeBusy timeMin: ${startIso}`);
-    console.log(`[CALENDAR] freeBusy timeMax: ${endIso}`);
-
     // Live Google Calendar API: check availability using official freeBusy API or events query
     try {
       let busyList: Array<{ start: string; end: string; summary?: string }> = [];
+      let freeBusyRaw: unknown = null;
 
       const resp = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
         method: 'POST',
@@ -271,7 +261,6 @@ export async function checkCalendarAvailability(
         }),
       });
 
-      console.log('[CALENDAR] Google freeBusy API HTTP status:', resp.status);
       if (resp.ok) {
         const data = (await resp.json()) as {
           calendars?: Record<string, {
@@ -279,36 +268,43 @@ export async function checkCalendarAvailability(
             errors?: Array<{ domain?: string; reason?: string }>;
           }>;
         };
-        const calendarResult = data.calendars?.[calendarId];
-        console.log('[CALENDAR] raw freeBusy calendar result:', JSON.stringify(calendarResult || null));
-        if (!calendarResult) {
-          console.error('[Google Calendar Availability] Malformed freeBusy response: missing calendar result.');
-          return {
-            available: false,
-            conflictReason: 'Calendar error: Unable to verify availability.',
-            error: 'Malformed Google freeBusy response: missing calendar result.',
-            errorCode: 'malformed_freebusy_response',
-          };
+        freeBusyRaw = data;
+        const calendarResult = data.calendars?.[calendarId] || Object.values(data.calendars || {})[0];
+
+        if (calendarResult && (!calendarResult.errors || calendarResult.errors.length === 0)) {
+          busyList = (calendarResult.busy || []).map((b) => ({
+            start: b.start,
+            end: b.end,
+            summary: 'Busy interval',
+          }));
+        } else {
+          // If calendarResult is missing or has errors in freeBusy, query events endpoint directly
+          console.warn('[Google Calendar Availability] freeBusy had error/missing calendar; falling back to events endpoint.');
+          const eventsResp = await fetch(
+            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?timeMin=${encodeURIComponent(startIso)}&timeMax=${encodeURIComponent(endIso)}&singleEvents=true`,
+            {
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+          if (eventsResp.ok) {
+            const eventsData = (await eventsResp.json()) as {
+              items?: Array<{ id: string; summary?: string; status?: string; transparency?: string; start?: { dateTime?: string }; end?: { dateTime?: string } }>;
+            };
+            const activeEvents = (eventsData.items || []).filter(
+              (item) => item.status !== 'cancelled' && item.transparency !== 'transparent',
+            );
+            busyList = activeEvents.map((ev) => ({
+              start: ev.start?.dateTime || startIso,
+              end: ev.end?.dateTime || endIso,
+              summary: ev.summary || 'Scheduled event',
+            }));
+          }
         }
-        if (calendarResult.errors?.length) {
-          console.error('[Google Calendar Availability] freeBusy calendar errors:', JSON.stringify(calendarResult.errors));
-          return {
-            available: false,
-            conflictReason: 'Calendar error: Unable to verify availability.',
-            error: `Google freeBusy calendar errors: ${JSON.stringify(calendarResult.errors)}`,
-            errorCode: 'freebusy_calendar_error',
-          };
-        }
-        busyList = (calendarResult.busy || []).map((b) => ({
-          start: b.start,
-          end: b.end,
-          summary: 'Busy interval',
-        }));
       } else {
         const freeBusyErrText = await resp.text().catch(() => '');
-        console.error('[Google Calendar Availability] freeBusy HTTP error:', resp.status, freeBusyErrText);
-        // If freeBusy has scope restriction (403) or error, query real Calendar events directly using existing calendar.events OAuth scope
-        console.log('[CALENDAR] Querying real Google Calendar events directly for slot window...');
+        freeBusyRaw = `HTTP ${resp.status}: ${freeBusyErrText}`;
+        console.warn('[Google Calendar Availability] freeBusy HTTP error:', resp.status, freeBusyErrText);
+        // Query real Calendar events directly using existing calendar.events OAuth scope
         const eventsResp = await fetch(
           `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?timeMin=${encodeURIComponent(startIso)}&timeMax=${encodeURIComponent(endIso)}&singleEvents=true`,
           {
@@ -317,9 +313,11 @@ export async function checkCalendarAvailability(
         );
         if (eventsResp.ok) {
           const eventsData = (await eventsResp.json()) as {
-            items?: Array<{ id: string; summary?: string; status?: string; start?: { dateTime?: string }; end?: { dateTime?: string } }>;
+            items?: Array<{ id: string; summary?: string; status?: string; transparency?: string; start?: { dateTime?: string }; end?: { dateTime?: string } }>;
           };
-          const activeEvents = (eventsData.items || []).filter((item) => item.status !== 'cancelled');
+          const activeEvents = (eventsData.items || []).filter(
+            (item) => item.status !== 'cancelled' && item.transparency !== 'transparent',
+          );
           busyList = activeEvents.map((ev) => ({
             start: ev.start?.dateTime || startIso,
             end: ev.end?.dateTime || endIso,
@@ -339,9 +337,16 @@ export async function checkCalendarAvailability(
 
       const isAvailable = busyList.length === 0;
 
-      console.log(`[CALENDAR] Google freeBusy result: busy count = ${busyList.length}, busy intervals = ${JSON.stringify(busyList)}`);
-      console.log(`[CALENDAR] result = ${isAvailable ? 'AVAILABLE' : 'BUSY'}`);
-      console.log(`[CALENDAR] final availability: ${isAvailable ? 'AVAILABLE' : 'BUSY'}`);
+      // Safe Server-side Debug Logging
+      console.log(`[CALENDAR DEBUG]`);
+      console.log(`Requested time: ${input.date} ${input.startTime} - ${input.endTime}`);
+      console.log(`Parsed start: ${startIso}`);
+      console.log(`Parsed end: ${endIso}`);
+      console.log(`Timezone: ${targetTimezone}`);
+      console.log(`Calendar ID: ${calendarId}`);
+      console.log(`FreeBusy response: ${JSON.stringify(freeBusyRaw)}`);
+      console.log(`Busy events: ${JSON.stringify(busyList)}`);
+      console.log(`Final availability: ${isAvailable ? 'AVAILABLE' : 'UNAVAILABLE'}`);
 
       if (isAvailable) {
         return { available: true };
@@ -363,9 +368,17 @@ export async function checkCalendarAvailability(
   }
 
   // Server-side Mock Engine
-  console.log('[CALENDAR] LIVE CALENDAR MODE = MOCK');
-  console.log(`[CALENDAR] [VOICE TOOL] checkCalendarAvailability called (mock fallback)`);
-  return checkMockAvailability(startIso, endIso);
+  const mockResult = checkMockAvailability(startIso, endIso);
+  console.log(`[CALENDAR DEBUG]`);
+  console.log(`Requested time: ${input.date} ${input.startTime} - ${input.endTime}`);
+  console.log(`Parsed start: ${startIso}`);
+  console.log(`Parsed end: ${endIso}`);
+  console.log(`Timezone: ${targetTimezone}`);
+  console.log(`Calendar ID: mock-calendar`);
+  console.log(`FreeBusy response: mock-mode`);
+  console.log(`Busy events: ${JSON.stringify(mockResult.conflicts || [])}`);
+  console.log(`Final availability: ${mockResult.available ? 'AVAILABLE' : 'UNAVAILABLE'}`);
+  return mockResult;
 }
 
 export function checkMockAvailability(startIso: string, endIso: string): CheckCalendarAvailabilityResult {
