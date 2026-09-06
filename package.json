@@ -6,6 +6,7 @@
   "engines": {
     "node": ">=22"
   },
+  "packageManager": "pnpm@12.3.4",
   "scripts": {
     "doctor": "node scripts/doctor.mjs",
     "dev": "cross-env NODE_OPTIONS=--max-old-space-size=4096 next dev --webpack",

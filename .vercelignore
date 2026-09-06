@@ -3,5 +3,5 @@ README.md
 .github
 .gitignore
 .DS_Store
-node_modules
-*.log 
+*.log
+.next
