@@ -3,6 +3,7 @@ import { isValidCustomerEmail, isPlaceholderEmail } from './email-validation';
 import { checkMockAvailability, normalizeDateTimes } from '../calendar/google';
 
 export { isValidCustomerEmail, isPlaceholderEmail, normalizeDateTimes };
+export { bookMeeting, rescheduleMeeting, cancelMeeting, resolveTimezone } from './booking-service';
 
 export function createInitialAppointmentState(): AppointmentState {
   return {
@@ -349,7 +350,7 @@ export function formatSlotReadable(
 /**
  * Helper to generate alternative available slots for a given date
  */
-function buildAlternativeSlots(dateStr: string, timezone: string, duration: number): TimeSlot[] {
+export function buildAlternativeSlots(dateStr: string, timezone: string, duration: number): TimeSlot[] {
   const dayName = new Date(dateStr + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
   const monthDay = new Date(dateStr + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 
@@ -452,6 +453,8 @@ export function updateAppointmentState(
     'want a demo',
     'arrange a demo',
     'need a demo',
+    'move forward with a demo',
+    'move forward',
     'can we meet',
     'can we schedule',
     'schedule a call',
@@ -1102,12 +1105,45 @@ export async function executeLiveVoiceBookingFlow(
     };
   }
 
+  // Check for cancellation request
+  const isCancel =
+    lower.includes('cancel the meeting') ||
+    lower.includes('cancel my meeting') ||
+    lower.includes('cancel our meeting') ||
+    lower.includes('cancel the appointment') ||
+    lower.includes('cancel my appointment') ||
+    lower.includes('cancel the demo') ||
+    lower.includes('cancel demo') ||
+    lower.includes('cancel our appointment');
+
+  if (isCancel) {
+    const eventId = state.calendarEventId || state.appointment?.calendarEventId;
+    if (eventId) {
+      const { cancelMeeting: cancelFn } = await import('./booking-service');
+      const cancelRes = await cancelFn({ calendarEventId: eventId, conversationId }, { state });
+      return {
+        state,
+        bookingAttempted: true,
+        calendarSuccess: cancelRes.success,
+        speechDirective: cancelRes.success
+          ? 'I have cancelled your scheduled meeting.'
+          : "I wasn't able to cancel the meeting due to a calendar error.",
+      };
+    } else {
+      return {
+        state,
+        bookingAttempted: false,
+        speechDirective: "You don't have an active scheduled meeting to cancel.",
+      };
+    }
+  }
+
   // Check appointment intent
   const hasAppointmentIntent =
     state.appointmentRequested ||
     state.appointment?.meetingRequested ||
     Boolean(parsedDate || parsedTime) ||
-    /schedule|book|meeting|appointment|demo|call/i.test(lower);
+    /(?:schedule|book|arrange|set\s+up)\s+(?:a\s+)?(?:meeting|demo|call|appointment)|(?:need|want|like)\s+(?:a\s+)?(?:meeting|demo|call)|(?:book|schedule)\s+me|\b(?:schedule|appointment|demo)\b/i.test(lower);
 
   if (!hasAppointmentIntent) {
     return { state, bookingAttempted: false };

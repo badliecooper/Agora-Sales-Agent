@@ -11,9 +11,7 @@ import {
   FindAvailableSlotsInput,
   AvailableTimeSlot,
   CreateCalendarMeetingInput,
-  CreateCalendarEventInput,
   CalendarMeetingResult,
-  CalendarEventResult,
 } from './types';
 
 /**
@@ -89,14 +87,13 @@ export type {
   SendMeetingConfirmationEmailResult,
 } from '../email/gmail';
 
+export {
+  cancelCalendarMeeting as deleteCalendarMeeting,
+  cancelCalendarMeeting,
+  deleteCalendarEvent,
+  cancelCalendarEvent,
+  updateCalendarMeeting as rescheduleCalendarMeeting,
+  updateCalendarMeeting,
+  updateCalendarEvent,
+} from './google';
 export { setMockFailureMode, resetMockCalendar };
-export type {
-  CheckCalendarAvailabilityInput,
-  CheckCalendarAvailabilityResult,
-  FindAvailableSlotsInput,
-  AvailableTimeSlot,
-  CreateCalendarMeetingInput,
-  CreateCalendarEventInput,
-  CalendarMeetingResult,
-  CalendarEventResult,
-};

@@ -2,6 +2,8 @@ import {
   SalesState,
   SalesStage,
   BuyingIntent,
+  UserIntent,
+  NextBestActionCategory,
   ChatMessage,
   CustomerInfoChecklist,
   NextInfoToCollect,
@@ -12,10 +14,15 @@ import {
   CanonicalCustomerProfile,
   StructuredCrmPayload,
   ObjectionRecord,
+  ObjectionType,
+  CoreObjectionCategory,
+  BuyingSignalStrength,
+  BudgetEconomics,
   NegotiationState,
   NegotiationStatus,
   CustomerActionType,
   PendingDetailsRequest,
+  AppointmentState,
 } from './types';
 import {
   createInitialAppointmentState,
@@ -36,6 +43,11 @@ import {
   deriveDealIntelligence,
   createInitialDealIntelligence,
 } from './deal-intelligence';
+import {
+  bookMeeting,
+  rescheduleMeeting,
+  cancelMeeting,
+} from './booking-service';
 
 export {
   createInitialAppointmentState,
@@ -49,6 +61,9 @@ export {
   formatTimeReadable,
   deriveDealIntelligence,
   createInitialDealIntelligence,
+  bookMeeting,
+  rescheduleMeeting,
+  cancelMeeting,
 };
 
 // In-memory conversation state store keyed by session/channel ID
@@ -80,12 +95,15 @@ export function createInitialCanonicalProfile(): CanonicalCustomerProfile {
       email: null,
       phone: null,
       company: null,
+      location: null,
       jobTitle: null,
       companySize: null,
       preferredContactMethod: null,
     },
     qualification: {
       need: null,
+      useCase: null,
+      volume: null,
       painPoints: [],
       requirements: [],
       currentSolution: null,
@@ -105,6 +123,12 @@ export function createInitialCanonicalProfile(): CanonicalCustomerProfile {
       negotiation: createInitialNegotiationState(),
       appointment: createInitialAppointmentState(),
       buyingIntent: 'unknown',
+      buyingSignals: [],
+      buyingSignalStrength: 'none',
+      primaryObjectionCategory: undefined,
+      budgetEconomics: undefined,
+      currentIntent: 'UNKNOWN',
+      nextBestActionCategory: 'ASK',
       salesStage: 'discovery',
       nextBestAction: null,
     },
@@ -112,6 +136,8 @@ export function createInitialCanonicalProfile(): CanonicalCustomerProfile {
       informationRequested: [],
       informationRefused: [],
       lastQuestionAsked: null,
+      questionsAlreadyAsked: [],
+      topicsDiscussed: [],
     },
   };
 }
@@ -205,6 +231,19 @@ export function createInitialSalesState(conversationId?: string): SalesState {
       lastSyncedStage: undefined,
     },
     profile: initialProfile,
+    location: undefined,
+    volume: undefined,
+    useCase: undefined,
+    buyingSignals: [],
+    currentIntent: 'UNKNOWN',
+    nextBestActionCategory: 'ASK',
+    topicsDiscussed: [],
+    questionsAlreadyAsked: [],
+    conversationStateSummary: {
+      known: {},
+      unknown: ['Name', 'Company', 'Location', 'Use Case', 'Budget', 'Volume', 'Email', 'Phone'],
+      relevantNow: ['Use Case'],
+    },
     painPoints: [],
     requirements: [],
     productsInterested: [],
@@ -214,6 +253,9 @@ export function createInitialSalesState(conversationId?: string): SalesState {
     appointment: createInitialAppointmentState(),
     competitorsMentioned: [],
     buyingIntent: 'low',
+    buyingSignalStrength: 'none',
+    primaryObjectionCategory: undefined,
+    budgetEconomics: undefined,
     leadScore: 10,
     salesStage: 'discovery',
     nextBestAction: 'discover_pain_point: Ask focused discovery questions to understand their use case, target audience, and scale.',
@@ -778,8 +820,10 @@ const KNOWN_COMPETITORS = [
 export interface ExtractedFacts {
   name?: { fullName: string; firstName: string; lastName: string | null; isExplicit?: boolean };
   company?: string;
+  location?: string;
   role?: string;
   companySize?: string;
+  volume?: string;
   timeline?: string;
   budget?: string;
   budgetMin?: number;
@@ -790,13 +834,16 @@ export interface ExtractedFacts {
   email?: string;
   phone?: string;
   need?: string;
+  useCase?: string;
   painPoints?: string[];
   requirements?: string[];
   productsInterested?: string[];
   objections?: string[];
   competitorsMentioned?: string[];
+  buyingSignals?: string[];
   refusals?: string[];
   buyingIntent?: BuyingIntent;
+  intent?: UserIntent;
   nextBestAction?: string;
 }
 
@@ -968,6 +1015,12 @@ export const BANNED_COMPANIES = new Set([
   ...KNOWN_COMPETITORS,
 ]);
 
+const KNOWN_LOCATIONS = new Set([
+  'hyderabad', 'bangalore', 'bengaluru', 'mumbai', 'delhi', 'pune', 'chennai', 'kolkata', 'noida', 'gurgaon',
+  'san francisco', 'new york', 'london', 'singapore', 'tokyo', 'berlin', 'paris', 'austin', 'seattle', 'boston',
+  'chicago', 'toronto', 'sydney', 'dubai', 'india', 'us', 'usa', 'uk', 'canada', 'germany',
+]);
+
 export function isValidCompanyName(candidate?: string | null, firstName?: string | null): boolean {
   if (!candidate) return false;
   let clean = candidate.trim().toLowerCase();
@@ -976,6 +1029,7 @@ export function isValidCompanyName(candidate?: string | null, firstName?: string
   if (clean.length < 2 || clean.length > 50) return false;
   if (STOP_NAME_WORDS.has(clean)) return false;
   if (BANNED_COMPANIES.has(clean)) return false;
+  if (KNOWN_LOCATIONS.has(clean)) return false;
   if (['the', 'a', 'an', 'our', 'your', 'my', 'its', 'their', 'we', 'this'].includes(clean)) return false;
   if (clean.includes(' dot') || clean.includes('.com') || clean.includes('@')) return false;
   if (/[:;@/\\=_*•#%^&~`]/.test(clean)) return false;
@@ -1104,6 +1158,23 @@ export function parseBudgetString(text: string): {
 
   if (/flexible|no\s+(?:fixed\s+)?budget|not\s+sure\s+about\s+budget/i.test(lower)) {
     return { budget: 'Flexible', currency: 'USD' };
+  }
+
+  // 0. Explicit budget patterns: "$200 budget", "have a $200 budget", "200 dollar budget", "budget of $200", "budget is $200"
+  const explicitBudgetMatch = text.match(
+    /(?:have\s+(?:a\s+)?|got\s+(?:a\s+)?|with\s+(?:a\s+)?|our\s+)?(?:\$([0-9]{1,3}(?:,[0-9]{3})+|\d+)|([0-9]{1,3}(?:,[0-9]{3})+|\d+)\s*(?:dollars?|usd))\s*(?:a\s+month|monthly)?\s*budget/i,
+  );
+  if (explicitBudgetMatch) {
+    const rawVal = explicitBudgetMatch[1] || explicitBudgetMatch[2];
+    const num = Number(rawVal.replace(/,/g, ''));
+    if (!isNaN(num) && num > 0) {
+      return {
+        budget: `$${num.toLocaleString()}`,
+        budgetMin: num,
+        budgetMax: num,
+        currency: 'USD',
+      };
+    }
   }
 
   // 1. Range: "between 15 and 25 thousand", "between $15,000 and $25,000", "15k to 25k", "budget 15-25k"
@@ -1370,6 +1441,335 @@ export function extractSpokenPhone(rawText: string): string | null {
 }
 
 /**
+ * Classifies user message into one of 16 structured intents.
+ * Latest user message has highest priority.
+ */
+export function detectUserIntent(
+  text: string,
+  _context?: {
+    previousIntent?: UserIntent;
+    previousQuestion?: string;
+    appointmentState?: AppointmentState;
+  },
+): UserIntent {
+  const clean = (text || '').trim();
+  const lower = clean.toLowerCase();
+  if (!clean) return 'UNKNOWN';
+
+  // 1. CANCELLATION
+  if (/(?:cancel\s+(?:the\s+)?(?:meeting|demo|call|appointment)|don['’]t\s+book|cancel\s+it)/i.test(lower)) {
+    return 'CANCELLATION';
+  }
+
+  // 2. RESCHEDULE
+  if (/(?:reschedule|change\s+the\s+time|different\s+time|move\s+it\s+to|change\s+(?:the\s+)?date)/i.test(lower)) {
+    return 'RESCHEDULE';
+  }
+
+  // 3. BOOKING_REQUEST (Highest priority over qualification/answers)
+  if (
+    /(?:arrange|book|schedule|set\s+up|give\s+me)\s+(?:a\s+)?(?:demo|call|meeting|walkthrough|session)/i.test(lower) ||
+    /(?:can\s+you|could\s+you|let['’]s|i['’]d\s+like\s+to|want\s+to|please)\s+(?:book|schedule|arrange|set\s+up)/i.test(lower) ||
+    /(?:tomorrow|next\s+week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?/i.test(lower) ||
+    /\b(?:book\s+me|calendar\s+invite|schedule\s+us)\b/i.test(lower) ||
+    /(?:demo|meeting)\s+for\s+(?:tomorrow|today|next\s+week)/i.test(lower) ||
+    /(?:want|like|ready)\s+to\s+(?:move\s+forward\s+with\s+(?:a\s+)?)?demo/i.test(lower) ||
+    /\b(?:move\s+forward\s+with\s+(?:a\s+)?demo|see\s+a\s+demo)\b/i.test(lower) ||
+    /\b(?:want\s+a\s+demo|need\s+a\s+demo|like\s+a\s+demo)\b/i.test(lower)
+  ) {
+    return 'BOOKING_REQUEST';
+  }
+
+  // 4. FRUSTRATION
+  if (
+    /(?:why\s+(?:are\s+you\s+asking\s+)?so\s+many\s+questions|too\s+many\s+questions|stop\s+asking|why\s+do\s+you\s+keep\s+asking|you['’]re\s+not\s+listening|i\s+already\s+told\s+you|already\s+said|broken\s+record|stop\s+interrogating)/i.test(lower)
+  ) {
+    return 'FRUSTRATION';
+  }
+
+  // 5. CONFUSION
+  if (
+    /(?:what\s+do\s+you\s+mean|i\s+don['’]t\s+understand|not\s+sure\s+what\s+you\s+mean|huh\??|doesn['’]t\s+make\s+sense)/i.test(lower)
+  ) {
+    return 'CONFUSION';
+  }
+
+  // 6. GOODBYE / DEPARTURE
+  if (
+    /^(?:bye|goodbye|have\s+to\s+go|talk\s+to\s+you\s+later|see\s+ya|gotta\s+run|cut\s+the\s+call|end\s+the\s+call)[.!]?$/i.test(lower) ||
+    /(?:cut\s+the\s+call|end\s+the\s+call|have\s+to\s+drop|hanging\s+up)/i.test(lower)
+  ) {
+    return 'GOODBYE';
+  }
+
+  // 7. PRICE_OBJECTION
+  if (
+    /(?:too\s+expensive|cannot\s+afford|can['’]t\s+afford|out\s+of\s+(?:our|my)\s+budget|beyond\s+(?:our|my)\s+budget|cheaper|need\s+a\s+discount|lower\s+the\s+price|too\s+pricey|costs?\s+too\s+much|\d+%\s+discount|discount)/i.test(lower)
+  ) {
+    return 'PRICE_OBJECTION';
+  }
+
+  // 8. PRICING
+  if (
+    /(?:how\s+much\s+does\s+it\s+cost|what['’]s\s+the\s+pricing|what\s+is\s+the\s+cost|how\s+much\s+is\s+it|pricing\s+plans?|rate\s+card|per\s+minute\s+cost|subscription\s+tiers?|how\s+is\s+it\s+billed)/i.test(lower)
+  ) {
+    return 'PRICING';
+  }
+
+  // 9. TECHNICAL_QUESTION
+  if (
+    /(?:latency|sub-?500ms|webrtc|sd-?rtn|packet\s+loss|turn-taking|vad|speech-to-text|tts|stt|llm\s+integration|jitter|bandwidth|global\s+network|api\s+latency|architecture|hipaa|soc\s*2|data\s+leakage|security)/i.test(lower)
+  ) {
+    return 'TECHNICAL_QUESTION';
+  }
+
+  // 10. BUYING_SIGNAL
+  if (
+    /(?:sounds\s+(?:good|great|promising|perfect)|this\s+is\s+what\s+we\s+need|ready\s+to\s+move\s+forward|how\s+do\s+we\s+sign\s+up|next\s+steps?|contract|agreement|ready\s+to\s+buy)/i.test(lower)
+  ) {
+    return 'BUYING_SIGNAL';
+  }
+
+  // 11. PRODUCT_QUESTION
+  if (
+    /(?:does\s+agora\s+support|can\s+agora|do\s+you\s+have|tell\s+me\s+about\s+(?:agora|conversational\s+ai|your\s+)|what\s+features|integration\s+with|crm\s+integration|why\s+(?:should\s+we\s+)?use\s+agora|another\s+provider|other\s+provider|competitor|want\s+to\s+know\s+about\s+(?:your\s+)?|how\s+does\s+your\s+|integrate\s+with\s+salesforce|salesforce|hubspot)/i.test(lower)
+  ) {
+    return 'PRODUCT_QUESTION';
+  }
+
+  // 12. USE_CASE
+  if (
+    /(?:we\s+are\s+building|i['’]m\s+building|we\s+need\s+a|looking\s+to\s+build|our\s+use\s+case|developing|matchmaking|dating|relationship\s+solutions|customer\s+support|virtual\s+assistant|telehealth|(?:building|need|want|develop)\s+(?:a\s+)?(?:voice\s+bot|voice\s+agent))/i.test(lower)
+  ) {
+    return 'USE_CASE';
+  }
+
+  // 13. POSITIVE_SIGNAL
+  if (/^(?:yes|yeah|yep|sure|correct|absolutely|definitely|sounds\s+good|that\s+works|perfect)[.!]?$/i.test(lower)) {
+    return 'POSITIVE_SIGNAL';
+  }
+
+  // 14. NEGATIVE_SIGNAL
+  if (/^(?:no|nope|nah|not\s+really|i\s+don['’]t\s+think\s+so|negative)[.!]?$/i.test(lower)) {
+    return 'NEGATIVE_SIGNAL';
+  }
+
+  // 15. GREETING
+  if (/^(?:hi|hello|hey|good\s+morning|good\s+afternoon|good\s+evening|hi\s+there|hello\s+there)[,.\s!]*$/i.test(lower)) {
+    return 'GREETING';
+  }
+
+  return 'UNKNOWN';
+}
+
+/**
+ * Detects whether a statement indicates strong, medium, or no buying signal.
+ */
+export function detectBuyingSignalStrength(text: string): BuyingSignalStrength {
+  const clean = (text || '').trim().toLowerCase();
+  if (!clean) return 'none';
+
+  // Strong: explicit moves to advance/book/buy
+  if (
+    /(?:ready\s+to\s+(?:buy|move\s+forward|sign\s+up|start|purchase)|let['’]s\s+(?:book|schedule|do\s+this|move\s+forward|start|sign\s+up)|want\s+to\s+buy|sign\s+us\s+up|send\s+(?:me\s+)?(?:the\s+)?(?:contract|agreement|invoice|invite)|how\s+do\s+we\s+(?:get\s+started|sign\s+up)|we['’]re\s+sold|take\s+my\s+money)\b/i.test(clean) ||
+    /(?:can\s+you|could\s+you|please)\s+(?:arrange|book|schedule|set\s+up)\s+(?:a\s+)?demo/i.test(clean) ||
+    /(?:tomorrow|next\s+week)\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?/i.test(clean)
+  ) {
+    return 'strong';
+  }
+
+  // Medium: exploring demo, pricing, integration
+  if (
+    /(?:can\s+we\s+see|show\s+me|can\s+i\s+get|interested\s+in)\s+(?:a\s+)?demo/i.test(clean) ||
+    /(?:what\s+would\s+this\s+cost|pricing\s+for\s+our\s+volume|how\s+does\s+the\s+pricing\s+work|can\s+you\s+explain\s+how\s+we\s+integrate|do\s+you\s+have\s+sdk\s+docs|how\s+hard\s+is\s+it\s+to\s+set\s+up)/i.test(clean)
+  ) {
+    return 'medium';
+  }
+
+  return 'none';
+}
+
+/**
+ * Detects one of the 9 core sales objections:
+ * PRICE | BUDGET | TIMING | TRUST | COMPETITOR | TECHNICAL | IMPLEMENTATION | NEED | AUTHORITY
+ */
+export function detectCoreObjection(
+  text: string,
+): { category: CoreObjectionCategory; objectionType: ObjectionType; text: string } | null {
+  const clean = (text || '').trim();
+  const lower = clean.toLowerCase();
+  if (!clean) return null;
+
+  // 1. PRICE (too expensive, costs too much, lower price, discount request)
+  if (
+    /(?:too\s+expensive|too\s+pricey|costs?\s+too\s+much|lower\s+the\s+price|need\s+a\s+discount|\d+%\s+discount|give\s+me\s+(?:a\s+)?discount|rates?\s+are\s+high|price\s+is\s+steep)/i.test(lower)
+  ) {
+    return { category: 'PRICE', objectionType: 'price_too_high', text: clean };
+  }
+
+  // 2. BUDGET (hard ceiling, limited budget, cannot afford, out of budget)
+  if (
+    /(?:cannot\s+afford|can['’]t\s+afford|out\s+of\s+(?:our|my)\s+budget|beyond\s+(?:our|my)\s+budget|budget\s+is\s+(?:tight|limited|capped|only)|hard\s+budget\s+ceiling|no\s+budget\s+for\s+this|budget\s+constraint)/i.test(lower)
+  ) {
+    return { category: 'BUDGET', objectionType: 'not_enough_budget', text: clean };
+  }
+
+  // 3. TIMING (not right now, bad timing, next quarter, next year, too busy)
+  if (
+    /(?:not\s+(?:right\s+)?now|bad\s+timing|not\s+the\s+right\s+time|call\s+back\s+(?:in|next)|maybe\s+next\s+(?:quarter|year|month)|too\s+busy\s+right\s+now|revisit\s+this\s+later|circle\s+back\s+later)/i.test(lower)
+  ) {
+    return { category: 'TIMING', objectionType: 'timing_concern', text: clean };
+  }
+
+  // 4. TRUST (reliability, uptime, audio drops, security, privacy, HIPAA, SOC 2, data leakage)
+  if (
+    /(?:is\s+agora\s+reliable|what\s+if\s+(?:the\s+)?audio\s+drops|will\s+it\s+fail|can\s+we\s+trust|security\s+concern|data\s+leakage|data\s+privacy|is\s+it\s+hipaa|soc\s*2|uptime\s+guarantee|data\s+retention)/i.test(lower)
+  ) {
+    return { category: 'TRUST', objectionType: 'security_concern', text: clean };
+  }
+
+  // 5. COMPETITOR (Twilio, Retell, Vapi, LiveKit, cheaper competitor, already using another)
+  if (
+    /(?:competitor|competitive|twilio|retell|vapi|livekit|daily\.co|another\s+provider|other\s+solution|already\s+using\s+(?:another|a\s+different)|why\s+(?:should\s+we\s+choose\s+)?agora\s+over)/i.test(lower)
+  ) {
+    return { category: 'COMPETITOR', objectionType: 'competitor_cheaper', text: clean };
+  }
+
+  // 6. TECHNICAL (latency, audio quality, packet loss, speech recognition, custom unsupported feature)
+  if (
+    /(?:latency\s+is\s+too\s+high|audio\s+quality|choppy|packet\s+loss|speech\s+recognition\s+accuracy|unsupported\s+feature|mainframe\s+cobol|holographic)/i.test(lower)
+  ) {
+    return { category: 'TECHNICAL', objectionType: 'missing_feature', text: clean };
+  }
+
+  // 7. IMPLEMENTATION (hard to integrate, complex SDK, lack dev bandwidth, deployment time)
+  if (
+    /(?:hard\s+to\s+integrate|complex\s+sdk|don['’]t\s+have\s+(?:the\s+)?(?:developers|engineers|bandwidth)|how\s+long\s+(?:does\s+it\s+take\s+to|will\s+it)\s+deploy|integration\s+risk|too\s+complicated\s+to\s+build)/i.test(lower)
+  ) {
+    return { category: 'IMPLEMENTATION', objectionType: 'implementation_risk', text: clean };
+  }
+
+  // 8. NEED (don't need voice, happy with text, chatbots are enough)
+  if (
+    /(?:don['’]t\s+need\s+voice|text\s+chat\s+is\s+enough|happy\s+with\s+(?:text|chatbots)|why\s+do\s+we\s+need\s+(?:voice|a\s+bot)|no\s+use\s+case\s+for\s+voice)/i.test(lower)
+  ) {
+    return { category: 'NEED', objectionType: 'perceived_value', text: clean };
+  }
+
+  // 9. AUTHORITY (need boss/manager/CTO signoff, not my decision)
+  if (
+    /(?:need\s+approval\s+from\s+my\s+manager|not\s+my\s+decision|need\s+to\s+(?:check\s+with|ask)\s+(?:my\s+)?(?:manager|boss|cto|vp|director|team)|don['’]t\s+have\s+(?:purchasing|budget)\s+power)/i.test(lower)
+  ) {
+    return { category: 'AUTHORITY', objectionType: 'need_approval', text: clean };
+  }
+
+  return null;
+}
+
+/**
+ * Checks if a prospect's product description is vague or ambiguous.
+ */
+export function isAmbiguousProductDescription(text: string): boolean {
+  const lower = (text || '').trim().toLowerCase();
+  if (!lower) return false;
+  const ambiguousPatterns = [
+    /\b(?:relationship\s+solutions?|dating\s+solutions?)\b/i,
+    /\b(?:an?\s+ai\s+platform|an?\s+ai\s+app|an?\s+ai\s+service)\b/i,
+    /\b(?:smart\s+platform|smart\s+solution|tech\s+solution)\b/i,
+    /\b(?:we\s+do\s+software|we\s+build\s+apps?)\b/i,
+    /\b(?:communication\s+tool|customer\s+tool)\b/i,
+  ];
+  const hasSpecificDomain =
+    /(?:matchmaking|dating\s+advisory|relationship\s+coaching|customer\s+support|call\s+center|sales\s+outreach|telehealth|gaming\s+voice)/i.test(lower);
+  return ambiguousPatterns.some((p) => p.test(lower)) && !hasSpecificDomain;
+}
+
+/**
+ * Computes realistic Agora pay-as-you-go economics and evaluates budget fit.
+ * Audio task: $0.10/min (first 300 minutes free).
+ */
+export function evaluateBudgetEconomics(
+  budgetStr?: string | null,
+  volumeStr?: string | null,
+): BudgetEconomics {
+  // Parse numeric budget
+  let statedBudget: number | undefined;
+  if (budgetStr) {
+    const cleanB = budgetStr.replace(/,/g, '');
+    const match = cleanB.match(/(?:[$€£]\s*|)(\d+(?:\.\d+)?)/);
+    if (match) {
+      statedBudget = parseFloat(match[1]);
+    }
+  }
+
+  // Parse volume / minutes
+  let estimatedMinutes: number | undefined;
+  if (volumeStr) {
+    const cleanV = volumeStr.replace(/,/g, '').toLowerCase();
+    const minMatch = cleanV.match(/(\d+)\s*(?:minute|min)/);
+    if (minMatch) {
+      estimatedMinutes = parseInt(minMatch[1], 10);
+    } else {
+      const callMatch = cleanV.match(/(\d+)\s*calls?/);
+      if (callMatch) {
+        // Standard voice bot call duration is ~1.5 minutes
+        estimatedMinutes = Math.round(parseInt(callMatch[1], 10) * 1.5);
+      }
+    }
+  }
+
+  // Default fallback if volume mentions 1,000 calls
+  if (estimatedMinutes === undefined && volumeStr && /1,?000\s*calls?/i.test(volumeStr)) {
+    estimatedMinutes = 1500;
+  }
+
+  if (estimatedMinutes !== undefined) {
+    const billableMinutes = Math.max(0, estimatedMinutes - 300);
+    const estimatedMonthlyCost = Math.round(billableMinutes * 0.10);
+
+    if (statedBudget !== undefined) {
+      if (estimatedMonthlyCost <= statedBudget) {
+        return {
+          estimatedMinutes,
+          estimatedMonthlyCost,
+          statedBudget,
+          fitStatus: 'fits_pay_as_you_go',
+          explanation: `At ~${estimatedMinutes.toLocaleString()} minutes per month, standard Agora pay-as-you-go pricing ($0.10/min with first 300 minutes free) is ~$${estimatedMonthlyCost}/month, which fits comfortably within your $${statedBudget}/month budget.`,
+        };
+      } else {
+        return {
+          estimatedMinutes,
+          estimatedMonthlyCost,
+          statedBudget,
+          fitStatus: 'budget_mismatch',
+          explanation: `At your estimated volume of ${estimatedMinutes.toLocaleString()} minutes, standard pay-as-you-go pricing at $0.10/min (after 300 free minutes) comes to ~$${estimatedMonthlyCost}/month. Because your stated budget is $${statedBudget}/month, this would exceed your budget ceiling. We want to be transparent about our pricing math rather than recommending an incompatible plan.`,
+        };
+      }
+    }
+
+    return {
+      estimatedMinutes,
+      estimatedMonthlyCost,
+      fitStatus: 'fits_pay_as_you_go',
+      explanation: `At ~${estimatedMinutes.toLocaleString()} minutes, standard Agora pay-as-you-go pricing is ~$${estimatedMonthlyCost}/month (with first 300 minutes free).`,
+    };
+  }
+
+  if (statedBudget !== undefined) {
+    return {
+      statedBudget,
+      fitStatus: 'needs_clarification',
+      explanation: `Your stated budget is $${statedBudget}/month. To verify exact pricing fit, we would need your estimated monthly call volume or minutes.`,
+    };
+  }
+
+  return {
+    fitStatus: 'needs_clarification',
+    explanation: 'Standard Agora Conversational AI audio task pricing is $0.10/min with the first 300 minutes free each month.',
+  };
+}
+
+/**
  * Extracts facts from a customer message (and context).
  * Distinguishes customer statements from AI assumptions (only user messages are passed).
  * Supports customer corrections.
@@ -1505,7 +1905,7 @@ export function extractFacts(
   // Guard against phrases like "go with Agora", "stick with", "deal with", "choose Agora", "move forward with", etc.
   const compMatch = !/(?:go|stick|deal|compare|choose|pick|about|forward|help|integrate|play|start|begin)\s+with/i.test(textWithoutEmails)
     ? textWithoutEmails.match(
-        /(?:work\s+for|work\s+at|working\s+(?:for|at|with)|employed\s+at|company\s+is|our\s+company\s+is|company\s+called|representing|calling\s+from|(?:(?:I\s+am|I['’]m|we\s+are|we['’]re|this\s+is)\s+(?:[A-Za-z]+\s+)?(?:from|at|with))|(?:^|[.!?]\s+)(?:from|with|at)|\bfrom|evaluating\s+this\s+for|implement\s+this\s+for|looking\s+to\s+implement\s+this\s+for)\s+([A-Za-z0-9&_-]+(?:\s+[A-Za-z0-9&_-]+)?)/i,
+        /(?:work\s+for|work\s+at|working\s+(?:for|at|with)|employed\s+at|company\s+is|our\s+company\s+is|company\s+called|representing|(?:(?:I\s+am|I['’]m|we\s+are|we['’]re|this\s+is)\s+(?:[A-Za-z]+\s+)?(?:from|at|with))|(?:^|[.!?]\s+)(?:from|with|at)|\bfrom|evaluating\s+this\s+for|implement\s+this\s+for|looking\s+to\s+implement\s+this\s+for)\s+([A-Za-z0-9&_-]+(?:\s+[A-Za-z0-9&_-]+)?)/i,
       )
     : null;
 
@@ -1869,6 +2269,57 @@ export function extractFacts(
   if (kvNextActionMatch) {
     facts.nextBestAction = kvNextActionMatch[1].trim();
   }
+
+  // 14. Location Extraction
+  const kvLocMatch = text.match(/(?:^|\n)\s*(?:Location|City|Office|Based In)\s*[:=-]\s*([^\n]+)/i);
+  const locPhraseMatch = text.match(
+    /(?:calling\s+from|based\s+in|located\s+in|live\s+in|offices?\s+in|headquartered\s+in)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
+  );
+  const commonCities = [
+    'Hyderabad', 'Bangalore', 'Bengaluru', 'Mumbai', 'Delhi', 'Pune', 'Chennai',
+    'San Francisco', 'New York', 'London', 'Singapore', 'Tokyo', 'Berlin',
+    'Austin', 'Seattle', 'Boston', 'Chicago', 'Toronto', 'Sydney'
+  ];
+  if (kvLocMatch) {
+    facts.location = kvLocMatch[1].trim();
+  } else if (locPhraseMatch) {
+    const cand = locPhraseMatch[1].trim();
+    if (!/^(?:the|our|a|an|agora|here|home|work|cloudcorp|sales)\b/i.test(cand)) {
+      facts.location = cand;
+    }
+  } else {
+    for (const city of commonCities) {
+      if (new RegExp(`\\b${city}\\b`, 'i').test(text)) {
+        facts.location = city;
+        break;
+      }
+    }
+  }
+
+  // 15. Volume Extraction
+  const kvVolMatch = text.match(/(?:^|\n)\s*(?:Volume|Call Volume|Expected Calls|Calls)\s*[:=-]\s*([^\n]+)/i);
+  const volMatch = text.match(
+    /(?:(?:about|around|approx(?:\.|imately)?|~)?\s*([0-9]{1,3}(?:,[0-9]{3})+|\d+)\s*(?:calls?|minutes?|hours?|sessions?)(?:\s*(?:a|per)\s*(?:month|day|year|week)|\s*monthly|\s*daily|\s*weekly)?)/i,
+  );
+  if (kvVolMatch) {
+    facts.volume = kvVolMatch[1].trim();
+  } else if (volMatch) {
+    facts.volume = volMatch[0].trim();
+  }
+
+  // 16. Use Case Extraction
+  const kvUseCaseMatch = text.match(/(?:^|\n)\s*(?:Use Case|Project|Application|Building)\s*[:=-]\s*([^\n]+)/i);
+  const useCaseMatch = text.match(
+    /(?:building|developing|creating|working\s+on|evaluating\s+for|need|want)\s+((?:[a-zA-Z-]+\s+){0,6}(?:relationship\s+solutions?|matchmaking(?:\s+and\s+relationship\s+advisory\s+voice\s+bot)?|dating(?:\s+app|\s+voice\s+bot)?|voice\s+bot|voice\s+agent|support\s+bot|customer\s+support|call\s+center|receptionist|telehealth|virtual\s+assistant|solutions?|platform|app|system|bot))/i,
+  );
+  if (kvUseCaseMatch) {
+    facts.useCase = kvUseCaseMatch[1].trim();
+  } else if (useCaseMatch) {
+    facts.useCase = useCaseMatch[1].trim();
+  }
+
+  // 17. Intent on this turn
+  facts.intent = detectUserIntent(text, { previousQuestion: previousAssistantQuestion });
 
   return facts;
 }
@@ -2241,6 +2692,29 @@ export function mergeIntoCanonicalProfile(
   }
   if (facts.nextBestAction) {
     next.sales.nextBestAction = facts.nextBestAction;
+  }
+  if (facts.intent) {
+    next.sales.currentIntent = facts.intent;
+  }
+  if (facts.buyingSignals) {
+    next.sales.buyingSignals = Array.from(
+      new Set([...(next.sales.buyingSignals || []), ...facts.buyingSignals]),
+    );
+  }
+
+  // 14. Location
+  if (facts.location) {
+    next.customer.location = facts.location;
+  }
+
+  // 15. Volume
+  if (facts.volume) {
+    next.qualification.volume = facts.volume;
+  }
+
+  // 16. Use Case
+  if (facts.useCase) {
+    next.qualification.useCase = facts.useCase;
   }
 
   return next;
@@ -2652,6 +3126,369 @@ export function validateFinalSalesState(state: SalesState): ValidationResult {
 }
 
 /**
+ * Next Best Action Decision Engine.
+ * Chooses exactly one action category per turn:
+ * ANSWER | ASK | CLARIFY | HANDLE_OBJECTION | QUALIFY | RECOMMEND | BOOK | ESCALATE | END
+ */
+export function determineNextBestAction(
+  state: SalesState,
+  latestIntent: UserIntent,
+  latestQuery: string,
+  _retrievedChunks: Array<{ documentName: string; category: string; score: number; text: string }> = [],
+): {
+  category: NextBestActionCategory;
+  action: string;
+  directive: string;
+  relevantNow: string[];
+} {
+  const lowerQuery = latestQuery.toLowerCase().trim();
+  const appt = state.appointment || state.sales?.appointment;
+  const buyingStrength = detectBuyingSignalStrength(lowerQuery);
+  const isBookingRequested =
+    latestIntent === 'BOOKING_REQUEST' ||
+    buyingStrength === 'strong' ||
+    Boolean(appt?.meetingRequested) ||
+    Boolean(state.appointmentRequested) ||
+    state.salesStage === 'closing' ||
+    /(?:arrange|book|schedule|move\s+forward\s+with)\s+(?:a\s+)?(?:demo|meeting|call)/i.test(lowerQuery);
+
+  // 1. BOOK: Strong buying signal or scheduling request immediately interrupts and stops qualification
+  if (isBookingRequested) {
+    if (appt?.meetingStatus === 'confirmed') {
+      const meetStr = appt.meetingUrl ? ` with Google Meet link: ${appt.meetingUrl}` : '';
+      return {
+        category: 'BOOK',
+        action: `confirm_appointment: You're booked for ${appt.selectedSlot?.formattedTime || 'the scheduled time'}.${meetStr}`,
+        directive: `Confirm the scheduled demo for ${appt.selectedSlot?.formattedTime || 'the scheduled time'}.`,
+        relevantNow: ['Booking Confirmation'],
+      };
+    }
+
+    if (appt?.meetingStatus === 'slot_proposed') {
+      return {
+        category: 'BOOK',
+        action: 'propose_meeting_slot: That time is unavailable. Propose alternative available meeting slots.',
+        directive: 'Acknowledge that the requested time is unavailable and suggest concrete alternative meeting slots.',
+        relevantNow: ['Alternative Meeting Slots'],
+      };
+    }
+
+    const hasDate = Boolean(appt?.preferredDate || state.meetingDate);
+    const hasTime = Boolean(appt?.preferredTime || state.meetingTime);
+    const hasEmail = Boolean(state.customerEmail || state.customer?.email || state.email);
+
+    let relevantNow: string[] = [];
+    if (!hasDate && !hasTime) {
+      relevantNow = ['Preferred Date and Time'];
+    } else if (!hasDate) {
+      relevantNow = ['Preferred Date'];
+    } else if (!hasTime) {
+      relevantNow = ['Preferred Time'];
+    } else if (!hasEmail) {
+      relevantNow = ['Email Address for Calendar Invite'];
+    } else {
+      relevantNow = ['Booking Confirmation'];
+    }
+
+    return {
+      category: 'BOOK',
+      action: 'arrange_demo',
+      directive: 'Transition immediately to booking the requested demo/meeting. STOP all qualification questions. Confirm preferred date and time, and collect email if not yet known.',
+      relevantNow,
+    };
+  }
+
+  // 2. RESCHEDULE / CANCELLATION
+  if (latestIntent === 'RESCHEDULE') {
+    return {
+      category: 'BOOK',
+      action: 'reschedule_meeting: Ask for the new preferred date and time.',
+      directive: 'Acknowledge the reschedule request and ask what date and time works better.',
+      relevantNow: ['New Preferred Date', 'New Preferred Time'],
+    };
+  }
+  if (latestIntent === 'CANCELLATION') {
+    return {
+      category: 'END',
+      action: 'cancel_meeting: Confirm cancellation smoothly.',
+      directive: 'Politely acknowledge the cancellation and let the customer know they can reach back out anytime.',
+      relevantNow: [],
+    };
+  }
+
+  // 3. GOODBYE / DEPARTURE
+  if (latestIntent === 'GOODBYE') {
+    return {
+      category: 'END',
+      action: 'end_call: Polite farewell.',
+      directive: 'Thank the caller warmly and wish them a wonderful day. Do not push for more information.',
+      relevantNow: [],
+    };
+  }
+
+  // 4. FRUSTRATION (de-escalate immediately, drop all questions)
+  if (latestIntent === 'FRUSTRATION') {
+    return {
+      category: 'ANSWER',
+      action: 'acknowledge_frustration: De-escalate and address their exact focus immediately.',
+      directive: 'Immediately acknowledge their frustration, apologize sincerely, drop all questions, and ask how you can directly help them right now.',
+      relevantNow: ['Customer Objective'],
+    };
+  }
+
+  // 5. REFUSAL HANDLING (respect customer choice without pressuring)
+  if (/(?:don['’]t\s+want\s+to\s+(?:share|disclose|say|give)|rather\s+not\s+(?:say|disclose|share)|none\s+of\s+your\s+business|skip\s+(?:that|this)|not\s+sharing)/i.test(lowerQuery)) {
+    return {
+      category: 'ANSWER',
+      action: 'respect_refusal: Respect customer choice without pressuring and advance consultative discussion.',
+      directive: 'Politely acknowledge that they prefer not to share that detail. Do not pressure or re-ask. Pivot smoothly to their voice project needs or technical requirements.',
+      relevantNow: ['Voice Architecture'],
+    };
+  }
+
+  // 5b. HUMAN ESCALATION REQUEST (prospect asks to talk to a human / real person)
+  if (/(?:speak|talk)\s+to\s+(?:a\s+)?(?:human|person|rep|sales\s+person|someone\s+else)|real\s+person|human\s+rep|enterprise\s+team/i.test(lowerQuery)) {
+    return {
+      category: 'ANSWER',
+      action: 'escalate_to_human: Offer direct connection with Agora solutions architecture team.',
+      directive: 'Politely acknowledge their request to speak with a human specialist. Let them know you can connect them directly with an Agora Solutions Architect or Enterprise Specialist, and confirm the best email/phone to have someone reach out immediately.',
+      relevantNow: ['Human Escalation Contact'],
+    };
+  }
+
+  // 5c. TECHNICAL QUESTION / INTERRUPTION (custom LLMs, VPCs, network, protocols)
+  if (
+    /(?:does\s+it\s+work\s+with|do\s+you\s+support|can\s+it\s+(?:run|connect|integrate)|custom\s+llm|private\s+vpc|vpc\s+peering|on-prem|architecture)/i.test(lowerQuery)
+  ) {
+    return {
+      category: 'ANSWER',
+      action: 'explain_technical: Explain Agora real-time engine and sub-500ms pipeline.',
+      directive: 'Answer the technical question directly using Agora verified sub-500ms voice pipeline and SD-RTN architecture. Do not redirect to docs.',
+      relevantNow: ['Technical Architecture'],
+    };
+  }
+
+  // 6. 9 CORE OBJECTION HANDLERS
+  const coreObjection = detectCoreObjection(lowerQuery);
+  const isObjectionStage = state.salesStage === 'objection_handling';
+
+  if (coreObjection || isObjectionStage) {
+    const category = coreObjection ? coreObjection.category : 'PRICE';
+
+    if (category === 'COMPETITOR' || /(?:competitor|competitive|twilio|retell|vapi|livekit|daily\.co|another\s+provider|other\s+solution)/i.test(lowerQuery)) {
+      return {
+        category: 'HANDLE_OBJECTION',
+        action: 'handle_competitor_objection: compare_products: Address competitor comparison using Agora strengths: sub-500ms real-time voice latency, SD-RTN global network reliability, natural voice interruption handling, and zero-data-leakage architecture.',
+        directive: 'Highlight Agora core competitive advantages: sub-500ms voice latency, SD-RTN global real-time network with 99.99% uptime, natural VAD voice interruption handling, and zero-data-leakage architecture. Check if ultra-low latency is critical to their use case.',
+        relevantNow: ['Agora Competitive Strengths'],
+      };
+    }
+
+    if (category === 'PRICE' || /(?:discount|expensive|costly|price|rate|\d+%\s+discount)/i.test(lowerQuery)) {
+      return {
+        category: 'HANDLE_OBJECTION',
+        action: 'handle_price_objection: Politely explain that standard pricing is already volume-optimized ($0.10/min with 300 free minutes), offer the official 20% annual commitment discount, and never promise unapproved discounts.',
+        directive: 'Acknowledge price concern with empathy. Explain that Agora standard pricing is $0.10/min with first 300 minutes free each month, and official upfront annual commitments receive an official 20% discount. Inform them that larger discounts require executive signoff. Never promise unauthorized discounts. Check if the annual discount addresses their concern.',
+        relevantNow: ['Official Pricing & Annual Discount'],
+      };
+    }
+
+    if (category === 'BUDGET' || /(?:cannot\s+afford|can['’]t\s+afford|out\s+of\s+budget|beyond\s+budget|budget\s+ceiling)/i.test(lowerQuery)) {
+      const econ = state.budgetEconomics || evaluateBudgetEconomics(state.budget, state.volume || state.companySize);
+      if (econ.fitStatus === 'fits_pay_as_you_go') {
+        return {
+          category: 'HANDLE_OBJECTION',
+          action: 'handle_budget_objection: Confirm that Agora standard pay-as-you-go pricing fits comfortably within their stated budget.',
+          directive: `Acknowledge their stated budget. Explain that Agora pay-as-you-go pricing ($0.10/min with 300 free minutes) comes to ~$${econ.estimatedMonthlyCost}/month at their volume, which fits comfortably within their $${econ.statedBudget || state.budget}/month budget. Check if this resolves their concern.`,
+          relevantNow: ['Agora Pricing Feasibility'],
+        };
+      } else if (econ.fitStatus === 'budget_mismatch') {
+        return {
+          category: 'HANDLE_OBJECTION',
+          action: 'handle_budget_objection: Transparently explain volume-to-pricing math and acknowledge budget mismatch without fabricating discounts.',
+          directive: `Acknowledge their budget constraint transparently. Explain that at ${econ.estimatedMinutes?.toLocaleString() || 'their'} minutes, standard $0.10/min pricing comes to ~$${econ.estimatedMonthlyCost}/month, which exceeds their $${econ.statedBudget || state.budget} budget. Do not push an expensive enterprise tier and never invent unapproved discounts. Ask if testing with a smaller pilot volume makes sense.`,
+          relevantNow: ['Transparent Pricing Reality'],
+        };
+      } else {
+        return {
+          category: 'HANDLE_OBJECTION',
+          action: 'handle_budget_objection: Explain standard pay-as-you-go pricing and ask for volume to calculate exact cost fit.',
+          directive: 'Acknowledge their budget transparently. Standard Agora Conversational AI audio task pricing is $0.10/min with the first 300 minutes free each month. Ask for their estimated monthly call volume or minutes to verify exact cost fit.',
+          relevantNow: ['Volume Estimate'],
+        };
+      }
+    }
+
+    if (category === 'TRUST' || /(?:reliable|uptime|audio\s+drops|security|data\s+privacy|hipaa|soc\s*2)/i.test(lowerQuery)) {
+      return {
+        category: 'HANDLE_OBJECTION',
+        action: 'handle_trust_objection: Address reliability and data security with 99.99% SD-RTN uptime, zero data retention, and HIPAA / SOC 2 certification.',
+        directive: 'Reassure the prospect using verified enterprise standards: Agora operates a proprietary SD-RTN network with 99.99% global uptime, zero voice stream data retention, sub-500ms latency, and full HIPAA and SOC 2 Type II compliance.',
+        relevantNow: ['Security & Reliability'],
+      };
+    }
+
+    if (category === 'TECHNICAL' || /(?:latency|mainframe|cobol|unsupported)/i.test(lowerQuery)) {
+      const isUnsupported = /(?:mainframe|cobol|holographic|analog)/i.test(lowerQuery);
+      return {
+        category: 'HANDLE_OBJECTION',
+        action: isUnsupported
+          ? 'clarify_requirement: Explicitly clarify that unconfirmed capabilities require confirmation with solutions engineering, avoiding any false promises.'
+          : 'handle_technical_objection: Address technical requirements accurately.',
+        directive: isUnsupported
+          ? 'Explicitly clarify that specialized legacy requirements (such as on-premise mainframe COBOL) are not supported out of the box and must be verified with solutions engineering. Avoid any false promises.'
+          : 'Address the technical requirement using Agora verified sub-500ms voice pipeline and SD-RTN architecture.',
+        relevantNow: ['Technical Architecture'],
+      };
+    }
+
+    if (category === 'AUTHORITY' || /(?:manager|approval|sign-off|boss|cto)/i.test(lowerQuery)) {
+      return {
+        category: 'HANDLE_OBJECTION',
+        action: 'request_decision_maker: Acknowledge the manager sign-off requirement and offer to include their manager directly in a joint technical demo.',
+        directive: 'Respectfully acknowledge that leadership or manager approval is standard. Offer to provide an executive summary or invite their manager to a joint technical demo.',
+        relevantNow: ['Stakeholder Inclusion'],
+      };
+    }
+
+    if (category === 'IMPLEMENTATION' || /(?:hard\s+to\s+integrate|complex\s+sdk|bandwidth|deploy)/i.test(lowerQuery)) {
+      return {
+        category: 'HANDLE_OBJECTION',
+        action: 'handle_implementation_objection: Highlight pre-built SDKs, Next.js quickstarts, and ready-to-use LLM integrations that enable days-to-launch deployment.',
+        directive: 'Address implementation concerns by highlighting Agora pre-built quickstarts, conversational AI client SDKs, and modular pipelines that allow developers to launch voice bots in days without building WebRTC infrastructure from scratch.',
+        relevantNow: ['Implementation Ease'],
+      };
+    }
+
+    if (category === 'TIMING' || /(?:not\s+right\s+now|bad\s+timing|next\s+quarter)/i.test(lowerQuery)) {
+      return {
+        category: 'HANDLE_OBJECTION',
+        action: 'handle_timing_objection: Respect timing constraints and offer an asynchronous technical overview or future follow-up.',
+        directive: 'Acknowledge their timing respectfully. Offer to share an executive summary or set a reminder for when their project cycle opens up.',
+        relevantNow: ['Future Follow-up'],
+      };
+    }
+
+    if (category === 'NEED' || /(?:don['’]t\s+need\s+voice|text\s+chat\s+is\s+enough)/i.test(lowerQuery)) {
+      return {
+        category: 'HANDLE_OBJECTION',
+        action: 'handle_need_objection: Explain high engagement and rapid resolution advantages of real-time conversational voice over text.',
+        directive: 'Acknowledge that text is great for simple queries, but voice delivers 3x higher customer engagement and faster resolution for complex workflows. Ask about their current customer resolution metrics.',
+        relevantNow: ['Voice Engagement Value'],
+      };
+    }
+  }
+
+  // 7. AMBIGUOUS PRODUCT CONCEPT DISCOVERY
+  const useCaseText = state.useCase || state.profile?.qualification?.useCase || '';
+  if (
+    isAmbiguousProductDescription(lowerQuery) ||
+    (latestIntent === 'USE_CASE' && isAmbiguousProductDescription(useCaseText)) ||
+    (useCaseText && isAmbiguousProductDescription(useCaseText) && state.salesStage === 'discovery')
+  ) {
+    return {
+      category: 'CLARIFY',
+      action: 'clarify_product_concept: Ask a focused clarifying question about what the product actually does for its users.',
+      directive: 'Acknowledge what they shared. Ask a focused, polite clarifying question about what their product actually does for its customers (e.g. matchmaking, dating advisory, coaching) before attempting to sell or qualify. Never use generic enthusiastic filler.',
+      relevantNow: ['Product Concept Specifics'],
+    };
+  }
+
+  // 8. MEDIUM BUYING SIGNAL: Prioritize answering query without tacking on questionnaire questions
+  if (buyingStrength === 'medium') {
+    return {
+      category: 'ANSWER',
+      action: 'answer_buying_query: Directly answer the product, pricing, or integration query with grounded Agora facts.',
+      directive: 'Prioritize answering the prospect query directly using verified Agora facts. Do NOT tack on qualification checklist questions.',
+      relevantNow: ['Grounded Solution Facts'],
+    };
+  }
+
+  // 9. PRICING INQUIRY
+  if (latestIntent === 'PRICING') {
+    return {
+      category: 'ANSWER',
+      action: 'ask_budget: quote_pricing: Quote official Agora pricing ($0.10/min audio task with 300 free min, $0.59/1k RTC min, and subscription tiers) and ask for estimated monthly voice minutes to calculate exact costs.',
+      directive: 'Quote official Agora pricing: $0.10/min audio task with first 300 minutes free, $0.59/1k RTC minutes, or package tiers. Be clear and direct.',
+      relevantNow: ['Official Pricing'],
+    };
+  }
+
+  // 10. TECHNICAL QUESTION (including mid-conversation topic changes)
+  if (latestIntent === 'TECHNICAL_QUESTION') {
+    return {
+      category: 'ANSWER',
+      action: 'explain_technical: Explain Agora real-time engine and sub-500ms pipeline.',
+      directive: 'Answer the technical question directly using Agora verified sub-500ms voice pipeline and SD-RTN architecture. Do not redirect to docs.',
+      relevantNow: ['Technical Architecture'],
+    };
+  }
+
+  // 11. PRODUCT QUESTION
+  if (latestIntent === 'PRODUCT_QUESTION') {
+    if (state.salesStage === 'discovery') {
+      return {
+        category: 'ANSWER',
+        action: 'discover_pain_point: explain_product: Briefly describe Agora Conversational AI capabilities and ask focused discovery questions about their specific use case and goals.',
+        directive: 'Briefly explain Agora Conversational AI capabilities (sub-500ms voice, turn-taking, modular AI) and ask discovery questions about what kind of voice application they are building.',
+        relevantNow: ['Product Capabilities', 'Prospect Use Case'],
+      };
+    }
+    return {
+      category: 'ANSWER',
+      action: 'explain_product: Describe Agora Conversational AI capabilities.',
+      directive: 'Explain Agora Conversational AI capabilities, modular STT/LLM/TTS architecture, and turn-taking intelligence.',
+      relevantNow: ['Product Capabilities'],
+    };
+  }
+
+  // 12. USE CASE (clear domain)
+  if (latestIntent === 'USE_CASE') {
+    if (state.salesStage === 'needs_analysis' || /(?:requirement\s+changed|changed\s+(?:our|my)\s+requirement|actually.*instead)/i.test(lowerQuery)) {
+      return {
+        category: 'CLARIFY',
+        action: 'clarify_requirement: Acknowledge the updated requirements and analyze technical architecture changes before making new recommendations.',
+        directive: 'Acknowledge the updated requirement and explore their inbound call flow, technical architecture changes, and concurrency before pitching.',
+        relevantNow: ['Updated Requirements', 'Architecture Fit'],
+      };
+    }
+    if (state.salesStage === 'discovery' || (!state.volume && !state.profile?.qualification?.volume)) {
+      return {
+        category: 'ASK',
+        action: 'discover_pain_point: Ask focused discovery questions to understand their specific voice workflow, scale, and customer experience goals.',
+        directive: `Acknowledge their use case (${useCaseText}). Ask focused discovery questions to understand their specific workflow, expected call volume or scale, and goals before recommending a solution.`,
+        relevantNow: ['Workflow & Scale'],
+      };
+    } else {
+      return {
+        category: 'RECOMMEND',
+        action: 'recommend_solution: Map Agora Conversational AI to their specific use case.',
+        directive: `Highlight how Agora's low-latency voice AI directly powers ${useCaseText}. Offer a live demonstration.`,
+        relevantNow: ['Architecture Fit'],
+      };
+    }
+  }
+
+  // 13. GREETING
+  if (latestIntent === 'GREETING') {
+    return {
+      category: 'ASK',
+      action: 'greeting_discovery: Welcome the caller and ask what voice project they are building.',
+      directive: 'Warmly greet the caller and ask what voice AI application or project they are building today.',
+      relevantNow: ['Project Overview'],
+    };
+  }
+
+  // Default: QUALIFY what is relevant now
+  return {
+    category: 'QUALIFY',
+    action: 'qualify_relevant: Focus on what matters now without reciting a questionnaire.',
+    directive: 'Engage naturally with what the prospect just said. Only ask a question if it directly informs the solution recommendation.',
+    relevantNow: ['Prospect Need'],
+  };
+}
+
+/**
  * Next-Question Decision Layer (Section 9 & Section 25).
  */
 export function getNextSalesQuestion(
@@ -2683,7 +3520,6 @@ export function getNextSalesQuestion(
 
   // Manual Details Handling:
   if (isManualMode) {
-    // If appointment has a partial date or time preference, ask for the missing part first
     if (appt?.meetingRequested && appt.meetingStatus !== 'confirmed') {
       if (appt.preferredDate && !appt.preferredTime) {
         const dateLabel = formatReadableDateLabel(appt.preferredDate);
@@ -2702,7 +3538,6 @@ export function getNextSalesQuestion(
       }
     }
 
-    // If user explicitly chose manual entry in this turn:
     if (userChoseManual) {
       return {
         field: 'manualDetails',
@@ -2711,7 +3546,6 @@ export function getNextSalesQuestion(
       };
     }
 
-    // In manual mode, NEVER verbally ask for customer details (Name, Email, Company, Phone)
     return null;
   }
 
@@ -2732,9 +3566,18 @@ export function getNextSalesQuestion(
         question: 'What day would you like to schedule the meeting for?',
       };
     }
+    if (appt.preferredDate && appt.preferredTime && !hasKnownEmail(state) && !isRefused('email')) {
+      const dateLabel = formatReadableDateLabel(appt.preferredDate);
+      const timeLabel = formatTimeReadable(appt.preferredTime);
+      return {
+        field: 'email',
+        reason: 'Need email for calendar invite and Meet link',
+        question: `I can schedule that for ${dateLabel} at ${timeLabel}! What is the best email address to send your calendar invite and Meet link to?`,
+      };
+    }
   }
 
-  // 1. Cut-Call Intercept: capture missing contact information before disconnection
+  // Cut-Call Intercept: capture missing contact information before disconnection
   const isCutCall = /(?:cut\s+(?:the\s+)?call|cut\s+call|disconnect|hang\s*up)/i.test(lowerText);
   if (isCutCall) {
     if (!hasKnownEmail(state) && !isRefused('email')) {
@@ -2753,16 +3596,56 @@ export function getNextSalesQuestion(
     }
   }
 
-  // 2. Demo Trigger
+  // Check intent and Next Best Action category
+  const intent = state.currentIntent || detectUserIntent(customerMessage);
+  const nbaCategory = state.nextBestActionCategory;
+
+  // Frustration: never ask a qualification question
+  if (intent === 'FRUSTRATION') {
+    return null;
+  }
+
+  // Refusal: never ask a question for a refused field
+  if (/(?:don['’]t\s+want\s+to\s+(?:share|disclose|say|give)|rather\s+not\s+(?:say|disclose|share)|none\s+of\s+your\s+business|skip\s+(?:that|this)|not\s+sharing)/i.test(lowerText)) {
+    return null;
+  }
+
+  // If Ambiguous USE_CASE or Product Description -> Clarify!
+  if (intent === 'USE_CASE' || isAmbiguousProductDescription(lowerText)) {
+    const useCase = state.useCase || profile.qualification.useCase || '';
+    if (
+      isAmbiguousProductDescription(useCase) ||
+      isAmbiguousProductDescription(lowerText) ||
+      /relationship\s+solutions?/i.test(useCase) ||
+      useCase.trim().toLowerCase() === 'solutions'
+    ) {
+      return {
+        field: 'useCase',
+        reason: 'Clarify ambiguous product concept',
+        question: "Could you tell me a bit more about the relationship solutions you're building — is it matchmaking, dating advisory, or relationship coaching?",
+      };
+    }
+  }
+
+  // If user asks for a demo / booking directly
   const isDemo =
+    intent === 'BOOKING_REQUEST' ||
     lowerText.includes('demo') ||
     lowerText.includes('book a demo') ||
-    lowerText.includes('arrange a demo') ||
-    lowerText.includes('see a demo') ||
-    lowerText.includes('like a demo') ||
-    lowerText.includes('want a demo');
+    lowerText.includes('arrange a demo');
 
   if (isDemo) {
+    if ((appt?.preferredDate || state.meetingDate) && (appt?.preferredTime || state.meetingTime) && !hasKnownEmail(state) && !isRefused('email')) {
+      const pDate = (appt?.preferredDate || state.meetingDate)!;
+      const pTime = (appt?.preferredTime || state.meetingTime)!;
+      const dateLabel = formatReadableDateLabel(pDate);
+      const timeLabel = formatTimeReadable(pTime);
+      return {
+        field: 'email',
+        reason: 'Need email for calendar invite and Meet link',
+        question: `I can schedule that for ${dateLabel} at ${timeLabel}! What is the best email address to send your calendar invite and Meet link to?`,
+      };
+    }
     if (!hasKnownEmail(state) && !isRefused('email')) {
       return {
         field: 'email',
@@ -2770,31 +3653,42 @@ export function getNextSalesQuestion(
         question: "Absolutely. What's the best email to send the demo details to?",
       };
     }
-    if (!hasKnownName(state) && !isRefused('name') && !isRefused('customerName')) {
+    if (!appt?.preferredDate && !appt?.preferredTime && !state.meetingDate && !state.meetingTime) {
+      return {
+        field: 'preferredDate',
+        reason: 'Ask date and time for requested demo',
+        question: 'I would be happy to arrange a live demo! What date and time works best for you?',
+      };
+    }
+    return null;
+  }
+
+  // If Handling Objection or Ending -> do not ask questions
+  if (nbaCategory === 'HANDLE_OBJECTION' || nbaCategory === 'END') {
+    return null;
+  }
+
+  // If Answering: only ask for caller name on initial turn when identity is unknown and not mid-flow topic shift
+  if (nbaCategory === 'ANSWER') {
+    const isTopicShift = /(?:wait|before that)/i.test(lowerText);
+    const isInitialIdentityTurn = !hasKnownName(state) && !hasKnownCompany(state) && !isRefused('name') && !isRefused('customerName') && !isTopicShift;
+    if (isInitialIdentityTurn) {
       return {
         field: 'name',
-        reason: 'Address contact for demo invitation',
+        reason: 'Establish caller identity early while answering',
         question: 'Before we dive in, what should I call you?',
       };
     }
-    if (!hasKnownCompany(state) && !isRefused('company')) {
-      return {
-        field: 'company',
-        reason: 'Configure demo environment for company',
-        question: 'Which company are you looking to implement this for?',
-      };
-    }
+    return null;
   }
 
-  // 3. Pricing / Quote Trigger
+  // Pricing / Quote Trigger
   const isPricingOrQuote =
     lowerText.includes('send me the pricing') ||
     lowerText.includes('send pricing') ||
     lowerText.includes('send me a quote') ||
     lowerText.includes('send a quote') ||
-    lowerText.includes('send details') ||
-    lowerText.includes('email me the pricing') ||
-    lowerText.includes('email me a quote');
+    lowerText.includes('email me the pricing');
 
   if (isPricingOrQuote) {
     if (!hasKnownEmail(state) && !isRefused('email')) {
@@ -2804,17 +3698,20 @@ export function getNextSalesQuestion(
         question: 'Sure. What email should I send that to?',
       };
     }
+    return null;
   }
 
-  // 4. Delegate to deterministic collector
-  const req = getNextRequiredInformation(state);
-  if (req) {
-    const fieldName = req.field === 'customerName' ? 'name' : req.field;
-    return {
-      field: fieldName,
-      reason: req.reason,
-      question: req.suggestedQuestion,
-    };
+  // Only if explicitly in QUALIFY mode, or initial discovery before identity is established
+  if (nbaCategory === 'QUALIFY' || (!hasKnownName(state) && !hasKnownCompany(state)) || (!state.need && !state.useCase)) {
+    const req = getNextRequiredInformation(state);
+    if (req) {
+      const fieldName = req.field === 'customerName' ? 'name' : req.field;
+      return {
+        field: fieldName,
+        reason: req.reason,
+        question: req.suggestedQuestion,
+      };
+    }
   }
 
   return null;
@@ -3988,16 +4885,23 @@ export function analyzeAndUpdateSalesState(
 
   // Intelligently infer Need & Requirements if prospect discussed voice usage, hours, support, or competitors
   if (!activeProfile.qualification.need) {
-    const lowerAll = allUserText.toLowerCase();
-    const hasVoiceHours = /hours?|voice|minutes|monthly\s+usage|call/i.test(lowerAll) || !!activeProfile.customer.companySize;
-    const hasAgentDiscussion = /agent|customer\s+support|automation|competitor|agora|platform|solution/i.test(lowerAll);
-    if (hasVoiceHours || hasAgentDiscussion) {
-      activeProfile.qualification.need = 'AI voice customer support automation';
-      if (!activeProfile.qualification.requirements.includes('conversational voice agent')) {
-        activeProfile.qualification.requirements.push('conversational voice agent');
-      }
-      if (!activeProfile.qualification.requirements.includes('customer support automation')) {
-        activeProfile.qualification.requirements.push('customer support automation');
+    const prevNeed = currentState.profile?.qualification?.need || currentState.qualification?.need || currentState.need;
+    if (prevNeed) {
+      activeProfile.qualification.need = prevNeed;
+    } else if (activeProfile.qualification.useCase) {
+      activeProfile.qualification.need = activeProfile.qualification.useCase;
+    } else {
+      const lowerAll = allUserText.toLowerCase();
+      const hasVoiceHours = /hours?|voice|minutes|monthly\s+usage|call/i.test(lowerAll) || !!activeProfile.customer.companySize;
+      const hasAgentDiscussion = /agent|customer\s+support|automation|competitor|agora|platform|solution/i.test(lowerAll);
+      if (hasVoiceHours || hasAgentDiscussion) {
+        activeProfile.qualification.need = 'AI voice customer support automation';
+        if (!activeProfile.qualification.requirements.includes('conversational voice agent')) {
+          activeProfile.qualification.requirements.push('conversational voice agent');
+        }
+        if (!activeProfile.qualification.requirements.includes('customer support automation')) {
+          activeProfile.qualification.requirements.push('customer support automation');
+        }
       }
     }
   }
@@ -4030,6 +4934,15 @@ export function analyzeAndUpdateSalesState(
     const p = extractSpokenPhone(seedPhone);
     if (p) activeProfile.customer.phone = p;
   }
+  if (!activeProfile.customer.location && (prevCust.location || currentState.customer?.location || currentState.location)) {
+    activeProfile.customer.location = prevCust.location || currentState.customer?.location || currentState.location || null;
+  }
+  if (!activeProfile.qualification.useCase && (currentState.profile?.qualification?.useCase || currentState.qualification?.useCase || currentState.useCase)) {
+    activeProfile.qualification.useCase = currentState.profile?.qualification?.useCase || currentState.qualification?.useCase || currentState.useCase || null;
+  }
+  if (!activeProfile.qualification.volume && (currentState.profile?.qualification?.volume || currentState.qualification?.volume || currentState.volume)) {
+    activeProfile.qualification.volume = currentState.profile?.qualification?.volume || currentState.qualification?.volume || currentState.volume || null;
+  }
   if (!activeProfile.qualification.budget && (currentState.profile?.qualification?.budget || currentState.budget)) {
     activeProfile.qualification.budget = currentState.profile?.qualification?.budget || currentState.budget || null;
   }
@@ -4039,8 +4952,12 @@ export function analyzeAndUpdateSalesState(
   if (!activeProfile.customer.companySize && (prevCust.companySize || currentState.companySize)) {
     activeProfile.customer.companySize = prevCust.companySize || currentState.companySize || null;
   }
-  if (!activeProfile.qualification.need && (currentState.profile?.qualification?.need || currentState.qualification?.need || currentState.need)) {
-    activeProfile.qualification.need = (currentState.profile?.qualification?.need || currentState.qualification?.need || currentState.need)!;
+  if (!activeProfile.qualification.need) {
+    if (currentState.profile?.qualification?.need || currentState.qualification?.need || currentState.need) {
+      activeProfile.qualification.need = (currentState.profile?.qualification?.need || currentState.qualification?.need || currentState.need)!;
+    } else if (activeProfile.qualification.useCase) {
+      activeProfile.qualification.need = activeProfile.qualification.useCase;
+    }
   }
   if (activeProfile.qualification.requirements.length === 0 && (currentState.profile?.qualification?.requirements || currentState.qualification?.requirements)) {
     activeProfile.qualification.requirements = [...(currentState.profile?.qualification?.requirements || currentState.qualification?.requirements || [])];
@@ -4378,6 +5295,61 @@ export function analyzeAndUpdateSalesState(
   // Calibrated multi-factor lead scoring
   const leadScore = calculateCalibratedLeadScore(activeProfile, allUserText, stage, intent);
 
+  // Detect latest intent on the most recent user turn
+  const latestIntent = detectUserIntent(latestUserText, { appointmentState: updatedAppointment });
+  activeProfile.sales.currentIntent = latestIntent;
+
+  const buyingStrength = detectBuyingSignalStrength(latestUserText);
+  activeProfile.sales.buyingSignalStrength = buyingStrength;
+
+  const coreObjection = detectCoreObjection(latestUserText);
+  if (coreObjection) {
+    activeProfile.sales.primaryObjectionCategory = coreObjection.category;
+  }
+
+  const budgetEconomics = evaluateBudgetEconomics(
+    activeProfile.qualification.budget || currentState.budget,
+    activeProfile.qualification.volume || currentState.volume || activeProfile.customer.companySize,
+  );
+  activeProfile.sales.budgetEconomics = budgetEconomics;
+
+  // Derive Next Best Action using the NBA decision engine
+  const preNbaState: SalesState = {
+    ...currentState,
+    salesStage: stage,
+    location: activeProfile.customer.location || currentState.location || undefined,
+    volume: activeProfile.qualification.volume || currentState.volume || undefined,
+    useCase: activeProfile.qualification.useCase || currentState.useCase || undefined,
+    budget: activeProfile.qualification.budget || currentState.budget || undefined,
+    buyingSignalStrength: buyingStrength,
+    primaryObjectionCategory: coreObjection?.category,
+    budgetEconomics,
+    appointment: updatedAppointment,
+    profile: activeProfile,
+  };
+  const nbaDecision = determineNextBestAction(preNbaState, latestIntent, latestUserText);
+  activeProfile.sales.nextBestActionCategory = nbaDecision.category;
+  if (nbaDecision.action) {
+    nextBestAction = nbaDecision.action;
+    activeProfile.sales.nextBestAction = nextBestAction;
+  }
+
+  // Build Known / Unknown / Relevant Now summary
+  const knownFields: Record<string, string> = {};
+  if (activeProfile.customer.fullName) knownFields['Name'] = activeProfile.customer.fullName;
+  if (activeProfile.customer.company) knownFields['Company'] = activeProfile.customer.company;
+  if (activeProfile.customer.location) knownFields['Location'] = activeProfile.customer.location;
+  if (activeProfile.customer.jobTitle) knownFields['Role'] = activeProfile.customer.jobTitle;
+  if (activeProfile.customer.email) knownFields['Email'] = activeProfile.customer.email;
+  if (activeProfile.customer.phone) knownFields['Phone'] = activeProfile.customer.phone;
+  if (activeProfile.qualification.useCase) knownFields['Use Case'] = activeProfile.qualification.useCase;
+  if (activeProfile.qualification.volume) knownFields['Volume'] = activeProfile.qualification.volume;
+  if (activeProfile.qualification.budget) knownFields['Budget'] = activeProfile.qualification.budget;
+  if (activeProfile.qualification.timeline) knownFields['Timeline'] = activeProfile.qualification.timeline;
+
+  const allPossibleFields = ['Name', 'Company', 'Location', 'Use Case', 'Volume', 'Budget', 'Timeline', 'Email', 'Phone', 'Role'];
+  const unknownFields = allPossibleFields.filter((f) => !knownFields[f]);
+
   // Build canonical state object
   let state: SalesState = {
     conversationId: currentState.conversationId || 'conv-' + Date.now(),
@@ -4388,12 +5360,15 @@ export function analyzeAndUpdateSalesState(
       email: activeProfile.customer.email || undefined,
       phone: activeProfile.customer.phone || undefined,
       company: activeProfile.customer.company || undefined,
+      location: activeProfile.customer.location || currentState.customer?.location || currentState.location || undefined,
       jobTitle: activeProfile.customer.jobTitle || undefined,
       companySize: activeProfile.customer.companySize || undefined,
       manualOverrides: { ...manualOverrides },
     },
     qualification: {
       need: activeProfile.qualification.need || undefined,
+      useCase: activeProfile.qualification.useCase || currentState.qualification?.useCase || currentState.useCase || undefined,
+      volume: activeProfile.qualification.volume || currentState.qualification?.volume || currentState.volume || undefined,
       painPoints: activeProfile.qualification.painPoints,
       requirements: activeProfile.qualification.requirements,
       budget: activeProfile.qualification.budget || undefined,
@@ -4450,9 +5425,24 @@ export function analyzeAndUpdateSalesState(
     company: activeProfile.customer.company || undefined,
     jobTitle: activeProfile.customer.jobTitle || undefined,
     role: activeProfile.customer.jobTitle || undefined,
+    location: activeProfile.customer.location || currentState.location || undefined,
+    volume: activeProfile.qualification.volume || currentState.volume || undefined,
+    useCase: activeProfile.qualification.useCase || currentState.useCase || undefined,
+    buyingSignals: activeProfile.sales.buyingSignals || [],
+    buyingSignalStrength: buyingStrength,
+    primaryObjectionCategory: coreObjection?.category,
+    budgetEconomics,
+    currentIntent: latestIntent,
+    nextBestActionCategory: nbaDecision.category,
+    conversationStateSummary: {
+      known: knownFields,
+      unknown: unknownFields,
+      relevantNow: nbaDecision.relevantNow,
+    },
     customerEmail: activeProfile.customer.email || currentState.customerEmail || currentState.email || undefined,
     email: activeProfile.customer.email || currentState.customerEmail || currentState.email || undefined,
     phone: activeProfile.customer.phone || undefined,
+    companySize: activeProfile.customer.companySize || undefined,
     need: activeProfile.qualification.need || undefined,
     painPoints: activeProfile.qualification.painPoints,
     requirements: activeProfile.qualification.requirements,
@@ -4826,3 +5816,28 @@ export function logSalesStateUpdate(state: SalesState): void {
     console.log(`[SALES STATE UPDATE] ${state.recentlyUpdatedField.field}: ${state.recentlyUpdatedField.value}`);
   }
 }
+
+// ==========================================
+// Phase 4: Response Validation & Evaluation Exports
+// ==========================================
+export {
+  validateResponse,
+  sanitizeAndCorrectResponse,
+  splitSentences,
+  extractQuestions,
+} from './validator';
+
+export {
+  evaluateTurnQuality,
+  evaluateConversationQuality,
+} from './quality-evaluator';
+
+export {
+  recordStageLatency,
+  startStageTimer,
+  recordTurnLatency,
+  analyzeBottlenecks,
+  getSessionTurnRecords,
+  resetLatencyStore,
+} from './latency-tracker';
+

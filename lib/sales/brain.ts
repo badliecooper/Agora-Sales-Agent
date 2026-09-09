@@ -335,7 +335,7 @@ function formatSalesBrainPrompt(
     : 'All critical CRM information satisfied';
 
   const isManualMode = state.detailsInputMode === 'manual';
-  const missingDetails = getMissingCustomerDetails(state);
+  const _missingDetails = getMissingCustomerDetails(state);
 
   let nextQuestionDirective = '';
   if (speechDirective) {
@@ -374,50 +374,68 @@ The customer has chosen to enter details manually using the on-screen form.
 Say: "Sure, you can enter your details in the form."
 DO NOT verbally ask for: Customer Name, Email, Company, Phone, Role, Budget, Timeline.
 Wait for the customer to complete the form.`;
-  } else if (state.appointmentRequested && state.meetingDate && !state.meetingTime) {
-    nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
+  } else if (state.nextBestActionCategory === 'BOOK' || state.appointmentRequested) {
+    if (state.meetingDate && state.meetingTime && !state.customerEmail && !state.email) {
+      nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
+The prospect requested a demo/meeting for ${formatDateReadable(state.meetingDate)} at ${formatTimeReadable(state.meetingTime)}.
+Acknowledge the date and time immediately and ask: "What is the best email address to send your calendar invite and Google Meet link to?"
+DO NOT ask any qualification questions (no budget, no team size, no role).`;
+    } else if (state.meetingDate && !state.meetingTime) {
+      nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
 The customer requested a meeting on ${state.meetingDate}.
 YOU MUST ASK: "What time would you like for the meeting on ${formatDateReadable(state.meetingDate)}?"
-DO NOT ask for customer name, email, company, or phone.`;
-  } else if (state.appointmentRequested && state.meetingTime && !state.meetingDate) {
-    nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
+DO NOT ask for customer name, email, company, budget, or phone.`;
+    } else if (state.meetingTime && !state.meetingDate) {
+      nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
 The customer requested a meeting at ${state.meetingTime}.
 YOU MUST ASK: "What date would you like for the meeting at ${formatTimeReadable(state.meetingTime)}?"
-DO NOT ask for customer name, email, company, or phone.`;
-  } else if (missingDetails.length === 0) {
+DO NOT ask for customer name, email, company, budget, or phone.`;
+    } else {
+      nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
+The prospect wants to book a demo/meeting. Transition immediately to booking. Stop normal qualification. Ask what date and time works best for them.`;
+    }
+  } else if (state.nextBestActionCategory === 'CLARIFY' && state.nextQuestion) {
     nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
-All customer contact details (Name, Email, Company, Phone) are ALREADY COLLECTED.
-DO NOT re-ask for customer name, company, role, email, phone, size, budget, or timeline.
-Answer the customer's questions naturally and advance to a technical demo.`;
-  } else if (state.nextQuestion && missingDetails.includes(state.nextQuestion.field)) {
+Acknowledge what the prospect shared (location, volume, and budget).
+Clarify what kind of voice bot experience they are building (e.g., matchmaking, dating advisory, coaching).
+Ask: "${state.nextQuestion.question}"
+DO NOT ask for budget or call volume since they are already known!`;
+  } else if (state.nextBestActionCategory === 'HANDLE_OBJECTION') {
     nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
-Answer the customer's question or statement in 1 to 2 sentences, and THEN YOU MUST ASK:
-"${state.nextQuestion.question}"
-Target Field to Collect: ${state.nextQuestion.field.toUpperCase()}
-Reason: ${state.nextQuestion.reason}`;
+Address the prospect's concern or question directly using verified facts from the Agora Knowledge Base. Answer in 1 to 2 spoken sentences. Do NOT interrogate or force qualification questions.`;
+  } else if (state.nextBestActionCategory === 'ANSWER') {
+    nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
+Directly answer the prospect's question in 1 to 2 spoken sentences using the verified knowledge base. Do not ask unnecessary questions.`;
+  } else if (state.nextQuestion) {
+    nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
+Answer the customer's statement in 1 to 2 sentences, and THEN ASK:
+"${state.nextQuestion.question}"`;
   } else {
     nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
-Continue the sales conversation naturally. Answer the customer's questions and advance the discussion. All essential customer qualification and contact information is already collected. DO NOT re-ask for customer name, company, role, email, phone, size, budget, or timeline. Focus on answering their questions, presenting consultative recommendations, and advancing to a technical demo.`;
+Continue the sales conversation naturally. Answer the customer's questions and advance the discussion. All essential customer qualification and contact information is already collected. Focus on consultative recommendations and advancing to a technical demo.`;
   }
 
   const prof = state.profile || {
-    customer: { fullName: state.customerName, company: state.company, jobTitle: state.role || state.jobTitle, email: state.email, phone: state.phone, companySize: state.companySize },
-    qualification: { need: state.need, timeline: state.timeline, budget: state.budget },
+    customer: { fullName: state.customerName, company: state.company, jobTitle: state.role || state.jobTitle, email: state.email, phone: state.phone, companySize: state.companySize, location: state.location },
+    qualification: { need: state.need, timeline: state.timeline, budget: state.budget, volume: state.volume, useCase: state.useCase },
     sales: { salesStage: state.salesStage, buyingIntent: state.buyingIntent },
     conversation: { informationRefused: state.refusedFields || [] },
   };
 
-  const knownList = [
-    prof.customer.fullName ? `Name: "${prof.customer.fullName}"` : null,
-    prof.customer.company ? `Company: "${prof.customer.company}"` : null,
-    prof.customer.jobTitle ? `Role: "${prof.customer.jobTitle}"` : null,
-    prof.customer.email ? `Email: "${prof.customer.email}"` : null,
-    prof.customer.phone ? `Phone: "${prof.customer.phone}"` : null,
-    prof.customer.companySize ? `Team Size: "${prof.customer.companySize}"` : null,
-    prof.qualification.timeline ? `Timeline: "${prof.qualification.timeline}"` : null,
-    prof.qualification.budget ? `Budget: "${prof.qualification.budget}"` : null,
-  ].filter(Boolean).join(', ') || 'None yet';
+  const knownEntries = state.conversationStateSummary?.known || {
+    ...(state.customerName ? { Name: state.customerName } : {}),
+    ...(state.company ? { Company: state.company } : {}),
+    ...(state.location ? { Location: state.location } : {}),
+    ...(state.useCase ? { 'Use Case': state.useCase } : {}),
+    ...(state.volume ? { Volume: state.volume } : {}),
+    ...(state.budget ? { Budget: state.budget } : {}),
+    ...(state.email ? { Email: state.email } : {}),
+    ...(state.phone ? { Phone: state.phone } : {}),
+  };
 
+  const knownList = Object.entries(knownEntries).map(([k, v]) => `- **${k}**: ${v}`).join('\n') || '- None yet';
+  const unknownList = (state.conversationStateSummary?.unknown || []).map((u) => `- ${u}`).join('\n') || '- None';
+  const relevantNowList = (state.conversationStateSummary?.relevantNow || []).map((r) => `- ${r}`).join('\n') || '- Current conversational step';
   const declinedList = (prof.conversation.informationRefused || []).join(', ') || 'None';
 
   return `You are **Ada**, an elite Senior Solutions Specialist and Voice AI Advisor from **Agora**.
@@ -425,7 +443,57 @@ Your mission is to guide prospects, discover requirements, handle objections, qu
 
 # ${nextQuestionDirective}
 
-# LIVE CANONICAL CUSTOMER PROFILE (INTERNAL)
+# MANDATORY CONVERSATIONAL RULES:
+1. **Response Length**: Default length: 1–2 spoken sentences. Be concise, spoken-audio friendly, and direct.
+2. **Questions**: Ask at most ONE question per turn. Never ask multiple questions. Never ask unnecessary questions.
+3. **Never Re-Ask Known Facts**: On every turn, review the KNOWN INFORMATION below. NEVER ask for any piece of information that is already known!
+4. **React Directly**: Always react directly to the latest user utterance.
+5. **STRICT BAN ON BOILERPLATE FILLER**:
+   DO NOT start responses with repetitive conversational fillers:
+   - "That's great!"
+   - "That's great to hear!"
+   - "Perfect!"
+   - "Absolutely!"
+   - "That sounds interesting!"
+   - "That's a smart approach!"
+   - "I completely understand!"
+   Speak like an authentic, thoughtful expert, not an automated questionnaire.
+6. **Buying Signals**:
+   - **Strong Signals** (e.g., "ready to buy", "book a demo", "schedule a call", "send the contract"):
+     STOP normal qualification immediately! Transition directly to booking or next steps. Do NOT ask any further qualification questions.
+   - **Medium Signals** (e.g., asking for pricing, demo details, or SDK integration):
+     Prioritize answering thoroughly with verified facts. Do NOT append unnecessary qualification questions.
+7. **Objection Handling (6-Step Loop)**:
+   When an objection is raised:
+   Acknowledge empathetically -> Understand the root reason -> Respond with grounded Agora facts -> Check if resolved ("Does that address your concern?") -> Resume.
+   Never argue, get defensive, or invent fake discounts.
+8. **Budget Economics & Honesty**:
+   Never invent discounts, plans, or capabilities. If the prospect's volume clearly exceeds their budget, be transparent about the math rather than pushing an out-of-reach plan.
+9. **Ambiguous Product Discovery**:
+   When the prospect's product description is vague (e.g., "relationship solutions", "smart app"), ask a clarifying question to understand what their product does for customers before selling.
+10. **Refusals & Frustration**:
+   If the prospect refuses to share information, respect their choice immediately without pressuring. If the prospect expresses frustration ("Why so many questions?"), sincerely apologize, drop the questions, and ask how you can directly help.
+11. **Strict Truthful Tool Execution (No Fake Actions)**:
+   - Tool results are the ONLY source of truth — NEVER assume or fabricate tool completion.
+   - You must NEVER claim a meeting was booked ("You're all booked", "I scheduled your meeting", "Invite sent") unless the backend tool has verified success with a valid event ID.
+   - If an action encounters a conflict or error, state the reality truthfully (e.g., offer alternative open slots on conflict, report calendar error on failure, and note email delivery issue if calendar succeeded but email failed).
+
+# STRUCTURED CONVERSATION STATE:
+## KNOWN INFORMATION (Explicitly provided by prospect - NEVER ask for these!):
+${knownList}
+${state.budgetEconomics ? `\n## BUDGET ECONOMICS & PRICING FIT:
+- Stated Budget: ${state.budgetEconomics.statedBudget !== undefined ? `$${state.budgetEconomics.statedBudget}/mo` : 'unknown'}
+- Estimated Minutes: ${state.budgetEconomics.estimatedMinutes !== undefined ? `${state.budgetEconomics.estimatedMinutes.toLocaleString()} min/mo` : 'unknown'}
+- Fit Status: ${state.budgetEconomics.fitStatus}
+- Assessment: ${state.budgetEconomics.explanation}` : ''}
+
+## UNKNOWN INFORMATION:
+${unknownList}
+
+## RELEVANT NOW (What actually matters to the conversation right now):
+${relevantNowList}
+
+# LIVE CANONICAL PROFILE (INTERNAL):
 - **Customer Name**: ${prof.customer.fullName || 'unknown'}
 - **Company**: ${prof.customer.company || 'unknown'}
 - **Role / Title**: ${prof.customer.jobTitle || 'unknown'}

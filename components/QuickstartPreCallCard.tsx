@@ -1,6 +1,6 @@
 'use client';
 
-import { Loader2 } from 'lucide-react';
+import { Loader2, Sparkles, Calendar, Zap, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 type QuickstartPreCallCardProps = {
@@ -16,37 +16,62 @@ export function QuickstartPreCallCard({
 }: QuickstartPreCallCardProps) {
   return (
     <div
-      className="mx-auto flex w-[min(92vw,26.25rem)] animate-fade-up flex-col items-center rounded-[20px] border border-[#2b2b2b] px-10 py-10 text-center shadow-[0_10px_24px_rgba(0,0,0,0.28)]"
+      className="mx-auto flex w-[min(94vw,30rem)] animate-fade-up flex-col items-center rounded-[24px] border border-border/70 bg-card/60 p-8 sm:p-10 text-center shadow-2xl backdrop-blur-xl"
       style={{
         backgroundImage:
-          'linear-gradient(164.988deg, rgba(54,54,54,0.2) 1.0596%, rgba(0,0,0,0) 96.089%), linear-gradient(90deg, rgb(16,16,16) 0%, rgb(16,16,16) 100%)',
+          'radial-gradient(ellipse at 50% 0%, rgba(59, 130, 246, 0.12) 0%, rgba(0, 0, 0, 0) 70%), linear-gradient(180deg, rgba(28, 28, 30, 0.8) 0%, rgba(14, 14, 16, 0.95) 100%)',
       }}
     >
-      <h1 className="text-[28px] font-medium leading-[1.2] text-white">
-        Try Agora&apos;s Voice Agent
+      {/* Status pill badge */}
+      <div className="mb-4 inline-flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 px-3 py-1 text-xs font-semibold text-blue-400">
+        <Sparkles className="h-3.5 w-3.5" />
+        <span>Agora AI Sales Specialist</span>
+      </div>
+
+      <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
+        Meet Your AI Sales Agent
       </h1>
-      <p className="mt-[14px] text-sm font-medium leading-6 text-muted-foreground">
-        Built on Agora&apos;s flagship Conversational AI engine, for effortless
-        agentic conversations.
+      <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+        Real-time consultative voice AI powered by Agora&apos;s Conversational AI Engine. Featuring live deal intelligence, objection handling, Google Calendar scheduling, and HubSpot CRM sync.
       </p>
+
+      {/* Value prop chips */}
+      <div className="mt-6 grid grid-cols-2 gap-2 w-full text-left">
+        <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-background/40 px-2.5 py-2 text-xs text-foreground/90">
+          <Zap className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+          <span className="truncate">&lt;500ms Voice Pipeline</span>
+        </div>
+        <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-background/40 px-2.5 py-2 text-xs text-foreground/90">
+          <Sparkles className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+          <span className="truncate">Next Best Action Brain</span>
+        </div>
+        <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-background/40 px-2.5 py-2 text-xs text-foreground/90">
+          <Calendar className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+          <span className="truncate">Google Calendar &amp; Meet</span>
+        </div>
+        <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-background/40 px-2.5 py-2 text-xs text-foreground/90">
+          <ShieldCheck className="h-3.5 w-3.5 text-purple-400 shrink-0" />
+          <span className="truncate">Pre-TTS Truth Guardrails</span>
+        </div>
+      </div>
 
       <Button
         onClick={onStartConversation}
         disabled={isLoading}
-        className="mt-12 h-10 w-full rounded-lg border border-primary bg-primary text-sm font-medium text-black hover:border-white hover:bg-white hover:text-black disabled:hover:border-primary disabled:hover:bg-primary disabled:hover:text-black"
+        className="mt-8 h-11 w-full rounded-xl border border-primary bg-primary text-sm font-semibold text-black hover:bg-primary/90 hover:scale-[1.01] transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
         aria-label={
           isLoading
-            ? 'Starting conversation with AI agent'
-            : 'Start conversation with AI agent'
+            ? 'Connecting with AI Sales Agent'
+            : 'Start call with AI Sales Agent'
         }
       >
         {isLoading ? (
-          <>
+          <div className="flex items-center justify-center gap-2">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Starting...
-          </>
+            <span>Connecting with Sales Agent...</span>
+          </div>
         ) : (
-          'Start Conversation'
+          'Connect with Sales Agent'
         )}
       </Button>
       {error && <p className="mt-3 text-xs text-destructive">{error}</p>}

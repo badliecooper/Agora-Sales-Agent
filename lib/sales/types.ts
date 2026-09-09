@@ -13,6 +13,27 @@ export type BuyingIntent = 'unknown' | 'low' | 'medium' | 'high';
 
 export type FieldStatus = 'known' | 'unknown' | 'not_applicable';
 
+export type CoreObjectionCategory =
+  | 'PRICE'
+  | 'BUDGET'
+  | 'TIMING'
+  | 'TRUST'
+  | 'COMPETITOR'
+  | 'TECHNICAL'
+  | 'IMPLEMENTATION'
+  | 'NEED'
+  | 'AUTHORITY';
+
+export type BuyingSignalStrength = 'strong' | 'medium' | 'none';
+
+export interface BudgetEconomics {
+  estimatedMinutes?: number;
+  estimatedMonthlyCost?: number;
+  statedBudget?: number;
+  fitStatus: 'fits_pay_as_you_go' | 'budget_mismatch' | 'needs_clarification' | 'fits_committed_tier';
+  explanation: string;
+}
+
 export type ObjectionType =
   | 'price_too_high'
   | 'perceived_value'
@@ -33,6 +54,7 @@ export type ObjectionSeverity = 'low' | 'medium' | 'high';
 export interface ObjectionRecord {
   id: string;
   type: ObjectionType;
+  category?: CoreObjectionCategory;
   text: string;
   severity: ObjectionSeverity;
   resolved: boolean;
@@ -81,7 +103,7 @@ export type MeetingStatus =
   | 'failed'
   | 'cancelled';
 
-export type ConfirmationStatus = 'none' | 'pending' | 'confirmed' | 'rejected';
+export type ConfirmationStatus = 'none' | 'pending' | 'confirmed' | 'rejected' | 'cancelled';
 
 export interface TimeSlot {
   start: string;
@@ -144,6 +166,35 @@ export type NextBestActionType =
   | 'arrange_follow_up'
   | 'close';
 
+export type UserIntent =
+  | 'GREETING'
+  | 'USE_CASE'
+  | 'PRICING'
+  | 'PRICE_OBJECTION'
+  | 'PRODUCT_QUESTION'
+  | 'TECHNICAL_QUESTION'
+  | 'BUYING_SIGNAL'
+  | 'BOOKING_REQUEST'
+  | 'RESCHEDULE'
+  | 'CANCELLATION'
+  | 'FRUSTRATION'
+  | 'CONFUSION'
+  | 'POSITIVE_SIGNAL'
+  | 'NEGATIVE_SIGNAL'
+  | 'GOODBYE'
+  | 'UNKNOWN';
+
+export type NextBestActionCategory =
+  | 'ANSWER'
+  | 'ASK'
+  | 'CLARIFY'
+  | 'HANDLE_OBJECTION'
+  | 'QUALIFY'
+  | 'RECOMMEND'
+  | 'BOOK'
+  | 'ESCALATE'
+  | 'END';
+
 export interface CanonicalCustomerProfile {
   customer: {
     firstName: string | null;
@@ -152,6 +203,7 @@ export interface CanonicalCustomerProfile {
     email: string | null;
     phone: string | null;
     company: string | null;
+    location?: string | null;
     jobTitle: string | null;
     companySize: string | null;
     preferredContactMethod: string | null;
@@ -159,6 +211,8 @@ export interface CanonicalCustomerProfile {
   };
   qualification: {
     need: string | null;
+    useCase?: string | null;
+    volume?: string | null;
     painPoints: string[];
     requirements: string[];
     currentSolution: string | null;
@@ -178,6 +232,12 @@ export interface CanonicalCustomerProfile {
     negotiation?: NegotiationState;
     appointment?: AppointmentState;
     buyingIntent: BuyingIntent;
+    buyingSignals?: string[];
+    buyingSignalStrength?: BuyingSignalStrength;
+    primaryObjectionCategory?: CoreObjectionCategory;
+    budgetEconomics?: BudgetEconomics;
+    currentIntent?: UserIntent;
+    nextBestActionCategory?: NextBestActionCategory;
     salesStage: SalesStage;
     nextBestAction: string | null;
     recommendedProduct?: string | null;
@@ -187,6 +247,8 @@ export interface CanonicalCustomerProfile {
     informationRequested: string[];
     informationRefused: string[];
     lastQuestionAsked: string | null;
+    questionsAlreadyAsked?: string[];
+    topicsDiscussed?: string[];
   };
 }
 
@@ -374,6 +436,7 @@ export interface SalesState {
     email?: string;
     phone?: string;
     company?: string;
+    location?: string;
     jobTitle?: string;
     companySize?: string;
     manualOverrides?: Record<string, boolean>;
@@ -382,6 +445,8 @@ export interface SalesState {
   // Canonical sales qualification
   qualification: {
     need?: string;
+    useCase?: string;
+    volume?: string;
     painPoints: string[];
     requirements: string[];
     budget?: string;
@@ -447,10 +512,13 @@ export interface SalesState {
   email?: string;
   phone?: string;
   company?: string;
+  location?: string;
   companySize?: string;
+  volume?: string;
   role?: string;
   jobTitle?: string;
   need?: string;
+  useCase?: string;
   painPoints: string[];
   requirements: string[];
   budget?: string;
@@ -467,6 +535,19 @@ export interface SalesState {
   appointment: AppointmentState;
   competitorsMentioned: string[];
   buyingIntent: BuyingIntent;
+  buyingSignals?: string[];
+  buyingSignalStrength?: BuyingSignalStrength;
+  primaryObjectionCategory?: CoreObjectionCategory;
+  budgetEconomics?: BudgetEconomics;
+  currentIntent?: UserIntent;
+  nextBestActionCategory?: NextBestActionCategory;
+  topicsDiscussed?: string[];
+  questionsAlreadyAsked?: string[];
+  conversationStateSummary?: {
+    known: Record<string, string>;
+    unknown: string[];
+    relevantNow: string[];
+  };
   leadScore: number; // 0 to 100
   salesStage: SalesStage;
   nextBestAction: string;
@@ -539,3 +620,107 @@ export interface SalesBrainResult {
   systemPrompt: string;
   bookingDirective?: string;
 }
+
+// ==========================================
+// Phase 4: Response Validation Types
+// ==========================================
+
+export type ValidationRuleId =
+  | 'sentence_count'
+  | 'question_count'
+  | 'repeated_question'
+  | 'unsupported_claim'
+  | 'fake_booking'
+  | 'excessive_filler'
+  | 'contradiction';
+
+export type ValidationSeverity = 'warning' | 'error';
+
+export interface ValidationIssue {
+  ruleId: ValidationRuleId;
+  severity: ValidationSeverity;
+  message: string;
+  offendingText?: string;
+}
+
+export interface ResponseValidationResult {
+  isValid: boolean;
+  issues: ValidationIssue[];
+  originalResponse: string;
+  correctedResponse: string;
+  wasCorrected: boolean;
+}
+
+export interface ValidatorOptions {
+  maxSentences?: number;
+  maxQuestions?: number;
+  allowPricingBreakdown?: boolean;
+  strictTruthful?: boolean;
+}
+
+// ==========================================
+// Phase 4: Conversation Quality Types
+// ==========================================
+
+export type QualityDimension =
+  | 'naturalness'
+  | 'contextRetention'
+  | 'questionQuality'
+  | 'conciseness'
+  | 'objectionHandling'
+  | 'buyingSignalAccuracy'
+  | 'actionCorrectness';
+
+export interface DimensionScore {
+  score: number; // 0 - 100
+  weight: number;
+  feedback: string;
+  passed: boolean;
+}
+
+export interface TurnQualityScore {
+  turnIndex: number;
+  userQuery: string;
+  agentResponse: string;
+  dimensions: Record<QualityDimension, DimensionScore>;
+  compositeScore: number; // 0 - 100
+  issues: string[];
+}
+
+export interface ConversationQualityReport {
+  totalTurns: number;
+  averageCompositeScore: number;
+  dimensionAverages: Record<QualityDimension, number>;
+  passedBenchmark: boolean;
+  summary: string;
+  turnScores: TurnQualityScore[];
+}
+
+// ==========================================
+// Phase 4: Pipeline Latency & Bottlenecks
+// ==========================================
+
+export type PipelineStage = 'stt' | 'llm' | 'tool' | 'tts';
+
+export interface StageLatencyMetric {
+  stage: PipelineStage;
+  durationMs: number;
+  timestamp: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TurnLatencyRecord {
+  turnIndex: number;
+  timestamp: number;
+  stages: Record<PipelineStage, number>;
+  totalDurationMs: number;
+  bottleneck: PipelineStage;
+}
+
+export interface BottleneckReport {
+  primaryBottleneck: PipelineStage;
+  averageLatencies: Record<PipelineStage, number>;
+  totalTurnAverageMs: number;
+  recommendations: string[];
+}
+

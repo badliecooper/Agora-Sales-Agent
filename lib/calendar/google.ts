@@ -4,6 +4,11 @@ import {
   FindAvailableSlotsInput,
   AvailableTimeSlot,
   CalendarEventResult,
+  CalendarMeetingResult,
+  CreateCalendarMeetingInput,
+  CancelCalendarMeetingInput,
+  CancelCalendarMeetingResult,
+  RescheduleCalendarMeetingInput,
 } from './types';
 import { isValidCustomerEmail } from '../sales/email-validation';
 
@@ -558,10 +563,6 @@ export async function findAvailableSlots(
 /**
  * Core tool 3: Create calendar event with strict idempotency
  */
-import {
-  CreateCalendarMeetingInput,
-  CalendarMeetingResult,
-} from './types';
 
 /**
  * Core tool 3: Create calendar event with Google Meet conference and strict idempotency.
@@ -841,6 +842,14 @@ export async function createCalendarMeeting(
       attendeeEmail: customerEmail,
       attendeeName: customerName,
     };
+    mockEvents.push({
+      id: generatedId,
+      summary: title,
+      start,
+      end,
+      timezone: targetTimezone,
+      attendees: customerEmail ? [customerEmail] : [],
+    });
     idempotencyStore.set(idempotencyKey, mockResult);
     return mockResult;
   }
@@ -857,3 +866,216 @@ export async function createCalendarMeeting(
 
 // Backwards-compatible alias for createCalendarEvent
 export const createCalendarEvent = createCalendarMeeting;
+
+/**
+ * Cancels / deletes a Google Calendar event.
+ */
+export async function cancelCalendarMeeting(
+  input: CancelCalendarMeetingInput,
+): Promise<CancelCalendarMeetingResult> {
+  const { calendarEventId, calendarId: explicitCalendarId } = input;
+  if (!calendarEventId) {
+    return { success: false, calendarEventId: '', status: 'failed', error: 'Missing calendarEventId' };
+  }
+
+  if (mockFailureMode) {
+    return {
+      success: false,
+      calendarEventId,
+      status: 'failed',
+      error: 'Simulated Calendar Service Failure: Internal 500 error deleting event.',
+    };
+  }
+
+  // Check mock mode or mock store
+  if (process.env.CALENDAR_MOCK_MODE === 'true' || calendarEventId.startsWith('mock_') || calendarEventId.startsWith('mock-')) {
+    const idx = mockEvents.findIndex((ev) => ev.id === calendarEventId);
+    if (idx !== -1) {
+      mockEvents.splice(idx, 1);
+    }
+    for (const [k, v] of idempotencyStore.entries()) {
+      if (v.calendarEventId === calendarEventId || v.eventId === calendarEventId) {
+        idempotencyStore.delete(k);
+      }
+    }
+    return {
+      success: true,
+      calendarEventId,
+      status: 'cancelled',
+    };
+  }
+
+  // Live Google Calendar API
+  const token = await getGoogleOAuthToken();
+  if (!token) {
+    return {
+      success: false,
+      calendarEventId,
+      status: 'failed',
+      error: 'Google Calendar authentication required',
+    };
+  }
+
+  const envLocal = getEnvLocalValues();
+  const calendarId = explicitCalendarId || process.env.GOOGLE_CALENDAR_ID || envLocal.GOOGLE_CALENDAR_ID || 'primary';
+
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(calendarEventId)}?sendUpdates=all`,
+      {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    );
+
+    if (res.status === 204 || res.status === 200) {
+      return { success: true, calendarEventId, status: 'cancelled' };
+    }
+    if (res.status === 404 || res.status === 410) {
+      return { success: true, calendarEventId, status: 'not_found' };
+    }
+    const errText = await res.text();
+    return { success: false, calendarEventId, status: 'failed', error: `Google API error (${res.status}): ${errText}` };
+  } catch (err) {
+    return {
+      success: false,
+      calendarEventId,
+      status: 'failed',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export const deleteCalendarEvent = cancelCalendarMeeting;
+export const cancelCalendarEvent = cancelCalendarMeeting;
+
+/**
+ * Reschedules / updates a Google Calendar event.
+ */
+export async function updateCalendarMeeting(
+  input: RescheduleCalendarMeetingInput,
+): Promise<CalendarMeetingResult> {
+  const { calendarEventId, newStart, newEnd, timezone, customerName, customerEmail, company } = input;
+  if (!calendarEventId) {
+    return { success: false, error: 'Missing calendarEventId for rescheduling' };
+  }
+
+  if (mockFailureMode) {
+    return {
+      success: false,
+      service: 'google_calendar',
+      error: 'Simulated Calendar Service Failure: Unable to update event.',
+    };
+  }
+
+  // Verify availability of new slot first
+  const [newDate, newTimeFull] = newStart.split('T');
+  const [, newEndTimeFull] = newEnd.split('T');
+  const avail = await checkCalendarAvailability({
+    date: newDate,
+    startTime: newTimeFull.slice(0, 5),
+    endTime: newEndTimeFull.slice(0, 5),
+    timezone,
+  });
+
+  if (!avail.available) {
+    return {
+      success: false,
+      service: 'google_calendar',
+      error: 'Requested new time slot is not available.',
+    };
+  }
+
+  if (process.env.CALENDAR_MOCK_MODE === 'true' || calendarEventId.startsWith('mock_') || calendarEventId.startsWith('mock-')) {
+    const ev = mockEvents.find((e) => e.id === calendarEventId);
+    if (ev) {
+      ev.start = newStart;
+      ev.end = newEnd;
+      ev.timezone = timezone;
+    } else {
+      mockEvents.push({
+        id: calendarEventId,
+        summary: `Agora Voice AI Demo — ${customerName || 'Customer'} (${company || 'Prospect'})`,
+        start: newStart,
+        end: newEnd,
+        timezone,
+        attendees: customerEmail ? [customerEmail] : [],
+      });
+    }
+
+    return {
+      success: true,
+      service: 'google_calendar',
+      calendarEventId,
+      eventId: calendarEventId,
+      event_id: calendarEventId,
+      start: newStart,
+      end: newEnd,
+      startTime: newStart,
+      endTime: newEnd,
+      timezone,
+      meetingUrl: `mock-meet:room-${calendarEventId}`,
+      attendeeName: customerName,
+      attendeeEmail: customerEmail,
+    };
+  }
+
+  // Live Google Calendar API PATCH
+  const token = await getGoogleOAuthToken();
+  if (!token) {
+    return { success: false, service: 'google_calendar', error: 'Google Calendar authentication required' };
+  }
+
+  const envLocal = getEnvLocalValues();
+  const calendarId = input.calendarId || process.env.GOOGLE_CALENDAR_ID || envLocal.GOOGLE_CALENDAR_ID || 'primary';
+
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(calendarEventId)}?sendUpdates=all`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          start: { dateTime: newStart, timeZone: timezone },
+          end: { dateTime: newEnd, timeZone: timezone },
+        }),
+      },
+    );
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return { success: false, service: 'google_calendar', error: `Google API error (${res.status}): ${errText}` };
+    }
+
+    const data = await res.json();
+    return {
+      success: true,
+      service: 'google_calendar',
+      calendarEventId: data.id,
+      eventId: data.id,
+      event_id: data.id,
+      start: data.start?.dateTime || newStart,
+      end: data.end?.dateTime || newEnd,
+      startTime: data.start?.dateTime || newStart,
+      endTime: data.end?.dateTime || newEnd,
+      timezone: data.start?.timeZone || timezone,
+      meetingUrl: data.hangoutLink || data.conferenceData?.entryPoints?.[0]?.uri,
+      attendeeName: customerName,
+      attendeeEmail: customerEmail,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      service: 'google_calendar',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export const rescheduleCalendarMeeting = updateCalendarMeeting;
+export const updateCalendarEvent = updateCalendarMeeting;

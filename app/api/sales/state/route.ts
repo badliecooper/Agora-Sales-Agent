@@ -257,9 +257,13 @@ export async function POST(request: NextRequest) {
                 const lastTurn = globalTurns.sessionProcessedTurns.get(cleanSessionId);
 
                 if (result.bookingDirective) {
-                  const cleanDirective = result.bookingDirective
+                  const rawDirective = result.bookingDirective
                     .replace(/^\[DIRECTIVE\]:\s*/i, '')
                     .trim();
+                  const { validateResponse } = await import('@/lib/sales/validator');
+                  const validation = validateResponse(rawDirective, result.salesState);
+                  const cleanDirective = validation.correctedResponse;
+
                   if (lastTurn !== cleanDirective) {
                     globalTurns.sessionProcessedTurns.set(
                       cleanSessionId,

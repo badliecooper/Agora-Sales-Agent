@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import { Client, AssociationTypes } from '@hubspot/api-client';
 import { SalesState, StructuredCrmPayload } from './sales/types';
 import {
@@ -59,25 +57,19 @@ export interface SyncLeadResult {
   statusCode?: number;
 }
 
-// Durable file-backed sync cache to persist across server restarts and hot reloads
-const CACHE_FILE = path.join(process.cwd(), '.crm-sync-cache.json');
+// Durable in-memory sync cache to persist across hot reloads and module re-evaluations
+const globalForHubspot = globalThis as unknown as {
+  crmDurableCache?: Record<string, SyncLeadResult>;
+};
+const durableCache: Record<string, SyncLeadResult> =
+  globalForHubspot.crmDurableCache ?? (globalForHubspot.crmDurableCache = {});
 
 function loadDurableCache(): Record<string, SyncLeadResult> {
-  try {
-    if (fs.existsSync(CACHE_FILE)) {
-      const content = fs.readFileSync(CACHE_FILE, 'utf-8');
-      return JSON.parse(content);
-    }
-  } catch {}
-  return {};
+  return durableCache;
 }
 
 function saveToDurableCache(sessionId: string, result: SyncLeadResult): void {
-  try {
-    const data = loadDurableCache();
-    data[sessionId] = result;
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch {}
+  durableCache[sessionId] = result;
 }
 
 // In-memory mutex for in-flight requests & completed results

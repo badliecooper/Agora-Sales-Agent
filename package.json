@@ -19,6 +19,7 @@
     "test:crm": "node --import tsx scripts/verify-hubspot-crm.ts",
     "test:negotiation": "node --import tsx scripts/verify-negotiation-objections.ts",
     "test:calendar": "node --import tsx scripts/verify-calendar-booking.ts",
+    "test:phase4": "node --import tsx scripts/verify-phase4-regression-suite.ts",
     "auth:google": "node --import tsx scripts/auth-google.ts",
     "test:google": "node --import tsx scripts/test-google-calendar.ts",
     "ingest:docs": "node --import tsx scripts/ingest-knowledge-docs.ts",

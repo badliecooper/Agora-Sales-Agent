@@ -219,6 +219,16 @@ export function createChatCompletionsHandler({
 
           console.log(`[Sales Brain] Generated Response : "${generatedResponseText.trim()}"\n`);
 
+          // Validate the completed response before final turn closure
+          const { validateResponse } = await import('@/lib/sales/validator');
+          const valResult = validateResponse(generatedResponseText, salesState);
+          if (!valResult.isValid) {
+            console.warn(
+              '[Sales Brain Validator] Response validation issues detected:',
+              valResult.issues.map((i) => `[${i.ruleId}] ${i.message}`),
+            );
+          }
+
           controller.enqueue(sseChunk({}, 'stop'));
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();

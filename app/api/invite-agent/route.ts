@@ -40,7 +40,7 @@ If you don't know a specific fact about Agora, say so plainly and suggest checki
 - **Guide, don't lecture**: Unlock the next step, not everything at once.`;
 
 // First thing the agent says when a user joins the channel.
-const GREETING = `Hi there! I'm Ada from Agora. Before we dive in, what should I call you and which company are you with?`;
+const GREETING = `Hi! I'm Ada from Agora. What are you looking to build with voice AI today?`;
 
 // agentUid identifies the AI in the RTC channel and shares its default with the client.
 const agentUid = String(DEFAULT_AGENT_UID);
