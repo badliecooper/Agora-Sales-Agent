@@ -105,7 +105,7 @@ async function verifyGenerateAgoraTokenReplacesZeroUid() {
 
 async function verifyChatCompletionsMissingEnv() {
   const { createChatCompletionsHandler } =
-    await import('../app/api/chat/completions/route');
+    await import('../lib/sales/chat-handler');
   const originalApiKey = process.env.NEXT_LLM_API_KEY;
   const originalUrl = process.env.NEXT_LLM_URL;
 
@@ -156,7 +156,7 @@ async function verifyChatCompletionsMissingEnv() {
 
 async function verifyChatCompletionsInvalidJson() {
   const { createChatCompletionsHandler } =
-    await import('../app/api/chat/completions/route');
+    await import('../lib/sales/chat-handler');
   const originalApiKey = process.env.NEXT_LLM_API_KEY;
   const originalUrl = process.env.NEXT_LLM_URL;
   process.env.NEXT_LLM_API_KEY = 'test-key';
@@ -206,7 +206,7 @@ async function verifyChatCompletionsInvalidJson() {
 
 async function verifyChatCompletionsSseDone() {
   const { createChatCompletionsHandler } =
-    await import('../app/api/chat/completions/route');
+    await import('../lib/sales/chat-handler');
   const originalApiKey = process.env.NEXT_LLM_API_KEY;
   const originalUrl = process.env.NEXT_LLM_URL;
   process.env.NEXT_LLM_API_KEY = 'test-key';

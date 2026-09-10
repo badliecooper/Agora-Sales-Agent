@@ -126,9 +126,70 @@ export async function processSalesBrain(
     ? userMessages[userMessages.length - 1].content.trim()
     : '';
 
-  // 3. Execute live voice booking flow with end-to-end logging and tool execution
-  let bookingDirective: string | undefined;
+  // 3a. Check for Human or Billing Escalation FIRST
+  let escalationDirective: string | undefined;
   if (latestQuery) {
+    const { detectEscalation } = await import('../escalation/detector');
+    const escDetect = detectEscalation(latestQuery);
+    if (escDetect.shouldEscalate && escDetect.category) {
+      console.log(`[Sales Brain] Escalation condition detected: ${escDetect.category} (${escDetect.priority})`);
+      const { escalateToHuman } = await import('../escalation/service');
+      const prospectEmail =
+        updatedState.customerEmail ||
+        updatedState.customer?.email ||
+        updatedState.email ||
+        updatedState.profile?.customer?.email;
+      const prospectName =
+        updatedState.customerName ||
+        updatedState.customer?.fullName ||
+        updatedState.profile?.customer?.fullName;
+      const company =
+        updatedState.company ||
+        updatedState.customer?.company ||
+        updatedState.profile?.customer?.company;
+      const phone =
+        updatedState.phone ||
+        updatedState.customer?.phone ||
+        updatedState.profile?.customer?.phone;
+
+      const escRes = await escalateToHuman({
+        category: escDetect.category,
+        priority: escDetect.priority,
+        sessionId,
+        prospect: {
+          name: prospectName || undefined,
+          email: prospectEmail || undefined,
+          phone: phone || undefined,
+          company: company || undefined,
+        },
+        issueSummary: latestQuery,
+        conversationSummary: messages
+          .slice(-6)
+          .map((m) => `${m.role}: ${m.content}`)
+          .join('\n'),
+      });
+
+      // Halt normal sales qualification & pitch
+      updatedState.salesStage = 'follow_up';
+      updatedState.nextBestActionCategory = 'ESCALATE';
+      updatedState.nextBestAction = `escalate_to_human: Escalated ${escDetect.category} to ${escRes.recipient}.`;
+      updatedState.escalation = {
+        status: escRes.status || 'SENT',
+        category: escDetect.category,
+        priority: escDetect.priority,
+        escalationId: escRes.escalationId,
+        recipient: escRes.recipient,
+        issueSummary: latestQuery,
+        sentAt: new Date().toISOString(),
+      };
+      updateSessionSalesState(sessionId, updatedState);
+      escalationDirective = escRes.speechDirective;
+    }
+  }
+
+  // 3b. Execute live voice booking flow ONLY IF NOT ESCALATED
+  let bookingDirective: string | undefined;
+  if (latestQuery && !escalationDirective) {
     const bookingResult = await executeLiveVoiceBookingFlow(updatedState, latestQuery, sessionId);
     updatedState = bookingResult.state;
     bookingDirective = bookingResult.speechDirective;
@@ -304,13 +365,20 @@ export async function processSalesBrain(
   }
 
   // 5. Construct grounded system prompt
-  const systemPrompt = formatSalesBrainPrompt(updatedState, retrievedChunks, bookingDirective);
+  const effectiveDirective = escalationDirective || bookingDirective;
+  const systemPrompt = formatSalesBrainPrompt(
+    updatedState,
+    retrievedChunks,
+    effectiveDirective,
+    Boolean(escalationDirective),
+  );
 
   return {
     salesState: updatedState,
     retrievedChunks,
     systemPrompt,
     bookingDirective,
+    escalationDirective,
   };
 }
 
@@ -318,6 +386,7 @@ function formatSalesBrainPrompt(
   state: SalesState,
   chunks: Array<{ documentName: string; category: string; score: number; text: string }>,
   speechDirective?: string,
+  isEscalationActive?: boolean,
 ): string {
   const knowledgeSection =
     chunks.length > 0
@@ -338,7 +407,16 @@ function formatSalesBrainPrompt(
   const _missingDetails = getMissingCustomerDetails(state);
 
   let nextQuestionDirective = '';
-  if (speechDirective) {
+  if (isEscalationActive && speechDirective) {
+    nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE (HUMAN / BILLING ESCALATION ACTIVE):
+${speechDirective}
+CRITICAL ESCALATION CONSTRAINTS:
+1. Speak ONLY this directive or a natural, empathetic variation of it.
+2. DO NOT try to sell, pitch, or qualify the prospect.
+3. DO NOT ask for budget, timeline, company size, or use cases.
+4. NEVER invent or promise refund timelines or claim payments were processed.
+5. If customer email or phone is missing, ask for their preferred contact info so the team can follow up.`;
+  } else if (speechDirective) {
     nextQuestionDirective = `MANDATORY CONVERSATIONAL DIRECTIVE FOR THIS TURN:
 ${speechDirective}
 DO NOT contradict this directive. Answer concisely in 1 to 2 spoken sentences.`;

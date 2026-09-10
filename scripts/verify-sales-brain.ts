@@ -7,7 +7,7 @@ import {
 } from '../lib/sales/tracker';
 import { ingestDocument } from '../lib/knowledge/service';
 import { NextRequest } from 'next/server';
-import { createChatCompletionsHandler } from '../app/api/chat/completions/route';
+import { createChatCompletionsHandler } from '../lib/sales/chat-handler';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {

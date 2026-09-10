@@ -595,6 +595,18 @@ export interface SalesState {
 
   // Real-time Deal Intelligence Layer
   dealIntelligence?: DealIntelligence;
+
+  // Human & Billing Escalation State
+  escalation?: {
+    status: 'NOT_REQUIRED' | 'RECOMMENDED' | 'PENDING' | 'SENT' | 'ACKNOWLEDGED' | 'RESOLVED' | 'FAILED';
+    category?: string;
+    priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+    escalationId?: string;
+    recipient?: string;
+    issueSummary?: string;
+    sentAt?: string;
+    error?: string;
+  };
 }
 
 export interface KnowledgeUsedItem {
@@ -619,6 +631,7 @@ export interface SalesBrainResult {
   }>;
   systemPrompt: string;
   bookingDirective?: string;
+  escalationDirective?: string;
 }
 
 // ==========================================
