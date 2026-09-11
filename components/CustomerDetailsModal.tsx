@@ -45,10 +45,19 @@ export function CustomerDetailsModal({
 
   const firstInputRef = useRef<HTMLInputElement>(null);
   const emailInputRef = useRef<HTMLInputElement>(null);
+  const prevIsOpenRef = useRef(false);
+  const prevRequestIdRef = useRef<string | undefined>(request?.requestId);
 
-  // Sync initial form values and determine which fields were already collected via voice
+  // Sync initial form values and determine which fields were already collected via voice.
+  // Only re-populate formData on the closed->open transition or when request ID changes,
+  // preventing active user input from being stomped by background transcription/salesState updates.
   useEffect(() => {
-    if (isOpen) {
+    const isOpening = !prevIsOpenRef.current && isOpen;
+    const isNewRequest = Boolean(request?.requestId && request.requestId !== prevRequestIdRef.current);
+    prevIsOpenRef.current = isOpen;
+    prevRequestIdRef.current = request?.requestId;
+
+    if (isOpen && (isOpening || isNewRequest)) {
       const voiceFields = new Set<string>();
 
       const initialName = currentCustomer.fullName || '';
@@ -83,7 +92,7 @@ export function CustomerDetailsModal({
         }
       }, 100);
     }
-  }, [isOpen, currentCustomer]);
+  }, [isOpen, request?.requestId, currentCustomer]);
 
   // Handle ESC key to dismiss modal
   useEffect(() => {

@@ -709,6 +709,11 @@ function ConversationInner({
   // Manage customer details modal visibility & submission
   const [isManualDetailsOpen, setIsManualDetailsOpen] = useState(false);
 
+  const openManualDetails = useCallback((source: string) => {
+    console.log(`[ManualDetails] OPEN called from: ${source}`, new Error().stack);
+    setIsManualDetailsOpen(true);
+  }, []);
+
   const isDetailsModalOpen = useMemo(() => {
     if (isManualDetailsOpen) return true;
 
@@ -736,6 +741,13 @@ function ConversationInner({
     salesState.customer?.company,
     salesState.company,
   ]);
+
+  useEffect(() => {
+    console.log('[CustomerDetailsModal] isOpen changed to:', isDetailsModalOpen, {
+      isManualDetailsOpen,
+      pendingStatus: salesState.pendingDetailsRequest?.status,
+    });
+  }, [isDetailsModalOpen, isManualDetailsOpen, salesState.pendingDetailsRequest?.status]);
 
   const handleDetailsSubmit = useCallback(
     async (details: {
@@ -771,6 +783,7 @@ function ConversationInner({
         console.error('[ConversationComponent] Error submitting customer details:', err);
         throw err;
       } finally {
+        console.log('[ManualDetails] CLOSE from handleDetailsSubmit finally', new Error().stack);
         setIsManualDetailsOpen(false);
       }
     },
@@ -813,6 +826,7 @@ function ConversationInner({
         console.error('[ConversationComponent] Error saving customer details:', err);
         throw err;
       } finally {
+        console.log('[ManualDetails] CLOSE from handleSaveCustomerDetails finally', new Error().stack);
         setIsManualDetailsOpen(false);
       }
     },
@@ -926,11 +940,12 @@ function ConversationInner({
       const w = window as unknown as Record<string, unknown>;
       w.__simulateVoiceTurn = handleSendVoiceTurn;
       w.__salesState = salesState;
-      w.__openDetailsModal = () => setIsManualDetailsOpen(true);
+      w.__openDetailsModal = () => openManualDetails('window.__openDetailsModal');
     }
-  }, [handleSendVoiceTurn, salesState]);
+  }, [handleSendVoiceTurn, salesState, openManualDetails]);
 
   const handleDetailsClose = useCallback(async () => {
+    console.log('[ManualDetails] CLOSE from handleDetailsClose', new Error().stack);
     setIsManualDetailsOpen(false);
     if (salesState.pendingDetailsRequest?.status === 'pending') {
       try {
@@ -1035,6 +1050,26 @@ function ConversationInner({
     onEndConversation(latestMessagesRef.current);
   }, [isCallEnded, localMicrophoneTrack, channel, salesState, onEndConversation]);
 
+  const currentCustomer = useMemo(
+    () => ({
+      fullName: salesState.customer?.fullName || salesState.customerName,
+      email: salesState.customer?.email || salesState.customerEmail || salesState.email,
+      company: salesState.customer?.company || salesState.company,
+      phone: salesState.customer?.phone || salesState.phone,
+    }),
+    [
+      salesState.customer?.fullName,
+      salesState.customerName,
+      salesState.customer?.email,
+      salesState.customerEmail,
+      salesState.email,
+      salesState.customer?.company,
+      salesState.company,
+      salesState.customer?.phone,
+      salesState.phone,
+    ],
+  );
+
   return (
     <>
       <QuickstartConversationLayout
@@ -1105,7 +1140,7 @@ function ConversationInner({
           <SalesIntelligenceDashboard
             salesState={salesState}
             className="h-full"
-            onOpenDetailsModal={() => setIsManualDetailsOpen(true)}
+            onOpenDetailsModal={() => openManualDetails('salesDashboard.onOpenDetailsModal')}
             onSaveCustomerDetails={handleSaveCustomerDetails}
           />
         }
@@ -1115,12 +1150,7 @@ function ConversationInner({
       <CustomerDetailsModal
         isOpen={isDetailsModalOpen}
         request={salesState.pendingDetailsRequest || null}
-        currentCustomer={{
-          fullName: salesState.customer?.fullName || salesState.customerName,
-          email: salesState.customer?.email || salesState.email,
-          company: salesState.customer?.company || salesState.company,
-          phone: salesState.customer?.phone || salesState.phone,
-        }}
+        currentCustomer={currentCustomer}
         onSubmit={handleDetailsSubmit}
         onClose={handleDetailsClose}
       />
