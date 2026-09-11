@@ -3249,7 +3249,7 @@ export function determineNextBestAction(
   // 5b. HUMAN ESCALATION REQUEST (prospect asks to talk to a human / real person)
   if (/(?:speak|talk)\s+to\s+(?:a\s+)?(?:human|person|rep|sales\s+person|someone\s+else)|real\s+person|human\s+rep|enterprise\s+team/i.test(lowerQuery)) {
     return {
-      category: 'ANSWER',
+      category: 'ESCALATE',
       action: 'escalate_to_human: Offer direct connection with Agora solutions architecture team.',
       directive: 'Politely acknowledge their request to speak with a human specialist. Let them know you can connect them directly with an Agora Solutions Architect or Enterprise Specialist, and confirm the best email/phone to have someone reach out immediately.',
       relevantNow: ['Human Escalation Contact'],

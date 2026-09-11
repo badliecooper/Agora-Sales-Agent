@@ -247,67 +247,86 @@ export async function POST(request: NextRequest) {
 
               const isNewUserTurn = Boolean(body.isNewUserTurn);
 
-              if (isNewUserTurn) {
-                const globalTurns = globalObj as unknown as {
-                  sessionProcessedTurns?: Map<string, string>;
-                };
-                if (!globalTurns.sessionProcessedTurns) {
-                  globalTurns.sessionProcessedTurns = new Map();
-                }
-                const lastTurn = globalTurns.sessionProcessedTurns.get(cleanSessionId);
+              const globalTurns = globalObj as unknown as {
+                sessionProcessedTurns?: Map<string, string>;
+              };
+              if (!globalTurns.sessionProcessedTurns) {
+                globalTurns.sessionProcessedTurns = new Map();
+              }
+              const lastTurn = globalTurns.sessionProcessedTurns.get(cleanSessionId);
 
-                if (result.bookingDirective) {
-                  const rawDirective = result.bookingDirective
-                    .replace(/^\[DIRECTIVE\]:\s*/i, '')
-                    .trim();
-                  const { validateResponse } = await import('@/lib/sales/validator');
-                  const validation = validateResponse(rawDirective, result.salesState);
-                  const cleanDirective = validation.correctedResponse;
+              const chosenDirective =
+                result.escalationDirective || result.bookingDirective;
 
-                  if (lastTurn !== cleanDirective) {
-                    globalTurns.sessionProcessedTurns.set(
-                      cleanSessionId,
-                      cleanDirective,
-                    );
-                    if (typeof activeSession.say === 'function') {
-                      await activeSession.say(cleanDirective).catch((sayErr) => {
-                        console.warn(
-                          '[SalesState] activeSession.say warning, falling back to think:',
-                          sayErr,
-                        );
-                        if (typeof activeSession.think === 'function') {
-                          return activeSession.think(
-                            `Please say exactly: "${cleanDirective}"`,
-                          );
-                        }
-                      });
-                    } else if (typeof activeSession.think === 'function') {
+              if (chosenDirective) {
+                const rawDirective = chosenDirective
+                  .replace(/^\[DIRECTIVE\]:\s*/i, '')
+                  .trim();
+                const { validateResponse } = await import('@/lib/sales/validator');
+                const validation = validateResponse(rawDirective, result.salesState);
+                const cleanDirective = validation.correctedResponse;
+
+                if (lastTurn !== cleanDirective) {
+                  globalTurns.sessionProcessedTurns.set(
+                    cleanSessionId,
+                    cleanDirective,
+                  );
+
+                  // If escalation directive is active, emit confirmed bracketed system message into session think stream
+                  if (result.escalationDirective) {
+                    const esc = result.salesState.escalation;
+                    const escSystemMsg = `[CONFIRMED ESCALATION DISPATCHED]: An escalation request has been dispatched to ${esc?.recipient || 'our team'} (Category: ${esc?.category || 'HUMAN_REQUEST'}, Priority: ${esc?.priority || 'HIGH'}, ID: ${esc?.escalationId || 'active'}). Directive: "${cleanDirective}". Say this directive immediately to the caller and reassure them.`;
+                    if (typeof activeSession.think === 'function') {
                       await activeSession
-                        .think(`Please say exactly: "${cleanDirective}"`)
+                        .think(escSystemMsg)
                         .catch((err) =>
                           console.warn(
-                            '[SalesState] activeSession.think on turn warning:',
+                            '[SalesState] activeSession.think escalation warning:',
                             err,
                           ),
                         );
                     }
                   }
-                } else if (
-                  latestUserText &&
-                  typeof activeSession.think === 'function'
-                ) {
-                  if (lastTurn !== latestUserText) {
-                    globalTurns.sessionProcessedTurns.set(
-                      cleanSessionId,
-                      latestUserText,
-                    );
-                    await activeSession.think(latestUserText).catch((err) =>
+
+                  if (typeof activeSession.say === 'function') {
+                    await activeSession.say(cleanDirective).catch((sayErr) => {
                       console.warn(
-                        '[SalesState] activeSession.think general chat warning:',
-                        err,
-                      ),
-                    );
+                        '[SalesState] activeSession.say warning, falling back to think:',
+                        sayErr,
+                      );
+                      if (typeof activeSession.think === 'function') {
+                        return activeSession.think(
+                          `Please say exactly: "${cleanDirective}"`,
+                        );
+                      }
+                    });
+                  } else if (typeof activeSession.think === 'function') {
+                    await activeSession
+                      .think(`Please say exactly: "${cleanDirective}"`)
+                      .catch((err) =>
+                        console.warn(
+                          '[SalesState] activeSession.think on turn warning:',
+                          err,
+                        ),
+                      );
                   }
+                }
+              } else if (
+                isNewUserTurn &&
+                latestUserText &&
+                typeof activeSession.think === 'function'
+              ) {
+                if (lastTurn !== latestUserText) {
+                  globalTurns.sessionProcessedTurns.set(
+                    cleanSessionId,
+                    latestUserText,
+                  );
+                  await activeSession.think(latestUserText).catch((err) =>
+                    console.warn(
+                      '[SalesState] activeSession.think general chat warning:',
+                      err,
+                    ),
+                  );
                 }
               }
             } catch (agentErr) {
@@ -323,6 +342,7 @@ export async function POST(request: NextRequest) {
         success: true,
         salesState: result.salesState,
         bookingDirective: result.bookingDirective,
+        escalationDirective: result.escalationDirective,
       });
     }
 

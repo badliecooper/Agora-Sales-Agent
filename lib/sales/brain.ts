@@ -12,6 +12,8 @@ import {
   formatTimeReadable,
 } from './tracker';
 import { ChatMessage, SalesBrainResult, SalesState } from './types';
+import { detectEscalation } from '../escalation/detector';
+import { escalateToHuman } from '../escalation/service';
 
 export interface ProcessSalesBrainInput {
   companyId?: string;
@@ -129,11 +131,13 @@ export async function processSalesBrain(
   // 3a. Check for Human or Billing Escalation FIRST
   let escalationDirective: string | undefined;
   if (latestQuery) {
-    const { detectEscalation } = await import('../escalation/detector');
-    const escDetect = detectEscalation(latestQuery);
+    const lastAssistantMsg = messages
+      .filter((m) => m.role === 'assistant')
+      .slice(-1)[0]?.content;
+    const escDetect = detectEscalation(latestQuery, typeof lastAssistantMsg === 'string' ? lastAssistantMsg : undefined);
+    console.log(`[Sales Brain TRACE] raw latestQuery: "${latestQuery}"`, 'escDetect:', JSON.stringify(escDetect));
     if (escDetect.shouldEscalate && escDetect.category) {
       console.log(`[Sales Brain] Escalation condition detected: ${escDetect.category} (${escDetect.priority})`);
-      const { escalateToHuman } = await import('../escalation/service');
       const prospectEmail =
         updatedState.customerEmail ||
         updatedState.customer?.email ||

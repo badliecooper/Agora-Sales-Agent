@@ -319,16 +319,20 @@ function ConversationInner({
 
         ai.on(AgoraVoiceAIEvents.TRANSCRIPT_UPDATED, (t) => {
           setRawTranscript((prev) => {
-            // Keep local typed messages that Agora audio hasn't transcribed
+            // Keep local typed messages and local confirmed/directive system messages that Agora audio hasn't transcribed
             const localOnlyTurns = prev.filter(
               (p) =>
-                String(p.uid) !== String(agentUID) &&
                 !t.some(
                   (item) =>
                     item.turn_id === p.turn_id ||
                     (item.text?.trim() === p.text?.trim() &&
                       Math.abs((item._time || 0) - (p._time || 0)) < 4000),
-                ),
+                ) &&
+                (String(p.uid) !== String(agentUID) ||
+                  p.text?.startsWith('[CONFIRMED') ||
+                  p.text?.startsWith('[DIRECTIVE') ||
+                  p.text?.includes('passed this to our team') ||
+                  p.text?.includes('escalated this')),
             );
             // Deduplicate local turns so identical user messages are not repeated
             const uniqueLocalTurns = localOnlyTurns.filter(
@@ -647,6 +651,47 @@ function ConversationInner({
                 : data.salesState.crm,
             }));
           }
+
+          if (data.escalationDirective && data.salesState?.escalation) {
+            const esc = data.salesState.escalation;
+            const confirmText = `[CONFIRMED ESCALATION DISPATCHED]: An escalation request has been dispatched to ${esc.recipient || 'our team'} (Category: ${esc.category || 'HUMAN_REQUEST'}, Priority: ${esc.priority || 'HIGH'}, ID: ${esc.escalationId || 'active'}).`;
+            const now = Date.now();
+            const confirmItem = {
+              turn_id: `esc-conf-${now}`,
+              uid: String(agentUID),
+              text: confirmText,
+              status: TurnStatus.END,
+              _time: now,
+            } as unknown as TranscriptHelperItem<Partial<AgentTranscription>>;
+            setRawTranscript((prev) => {
+              const alreadyHas = prev.some(
+                (x) => x.text?.includes('[CONFIRMED ESCALATION DISPATCHED]'),
+              );
+              return alreadyHas ? prev : [...prev, confirmItem];
+            });
+          }
+
+          const activeDirective = data.escalationDirective || data.bookingDirective;
+          if (activeDirective) {
+            const cleanText = activeDirective.replace(/^\[DIRECTIVE\]:\s*/i, '').trim();
+            const now = Date.now() + 1;
+            const agentItem = {
+              turn_id: now,
+              uid: String(agentUID),
+              text: cleanText,
+              status: TurnStatus.END,
+              _time: now,
+            } as unknown as TranscriptHelperItem<Partial<AgentTranscription>>;
+            setRawTranscript((prev) => {
+              const alreadyHas = prev.some(
+                (x) =>
+                  String(x.uid) === String(agentUID) &&
+                  x.text?.trim() === cleanText &&
+                  Math.abs((x._time || 0) - now) < 4000,
+              );
+              return alreadyHas ? prev : [...prev, agentItem];
+            });
+          }
         }
       } catch (err: unknown) {
         if ((err as Error)?.name !== 'AbortError') {
@@ -824,8 +869,28 @@ function ConversationInner({
             }));
           }
 
-          if (data.bookingDirective) {
-            const cleanText = data.bookingDirective.replace(/^\[DIRECTIVE\]:\s*/i, '').trim();
+          if (data.escalationDirective && data.salesState?.escalation) {
+            const esc = data.salesState.escalation;
+            const confirmText = `[CONFIRMED ESCALATION DISPATCHED]: An escalation request has been dispatched to ${esc.recipient || 'our team'} (Category: ${esc.category || 'HUMAN_REQUEST'}, Priority: ${esc.priority || 'HIGH'}, ID: ${esc.escalationId || 'active'}).`;
+            const now = Date.now();
+            const confirmItem = {
+              turn_id: `esc-conf-${now}`,
+              uid: String(agentUID),
+              text: confirmText,
+              status: TurnStatus.END,
+              _time: now,
+            } as unknown as TranscriptHelperItem<Partial<AgentTranscription>>;
+            setRawTranscript((prev) => {
+              const alreadyHas = prev.some(
+                (x) => x.text?.includes('[CONFIRMED ESCALATION DISPATCHED]'),
+              );
+              return alreadyHas ? prev : [...prev, confirmItem];
+            });
+          }
+
+          const activeDirective = data.escalationDirective || data.bookingDirective;
+          if (activeDirective) {
+            const cleanText = activeDirective.replace(/^\[DIRECTIVE\]:\s*/i, '').trim();
             const now = Date.now() + 1;
             const agentItem = {
               turn_id: now,

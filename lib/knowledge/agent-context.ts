@@ -166,9 +166,16 @@ export function buildSalesAgentPrompt(options: {
 - **Meeting Time**: ${state.meetingTime || 'none'}
 - **Calendar Event ID**: ${state.calendarEventId || 'none'}
 - **Confirmation Email Status**: ${state.confirmationEmailStatus || 'none'}
+- **Escalation Status**: ${state.escalation?.status || 'none'}
+${state.escalation?.status === 'SENT' ? `- **Escalation Recipient**: ${state.escalation.recipient || 'support@agora.io'} (Category: ${state.escalation.category || 'HUMAN_REQUEST'})` : ''}
 
 ${
-  isManual
+  state.escalation?.status === 'SENT'
+    ? `## ACTIVE HUMAN / TEAM ESCALATION:
+This conversation has been escalated to our team (${state.escalation.recipient || 'our team'}).
+DO NOT pitch, sell, or ask qualification questions.
+Reassure the caller that the team has their details and will follow up directly.`
+    : isManual
     ? `## STRICT MANUAL DETAILS MODE ACTIVE:
 The user has chosen to enter their details manually in the on-screen form.
 DO NOT verbally ask for: Name, Email, Company, Phone.
@@ -249,7 +256,9 @@ Then:
 The agent must NEVER say:
 - "I have scheduled your meeting"
 - "I sent you an email"
-unless the booking tool createCalendarMeeting returned success: true with an event ID, and sendMeetingConfirmationEmail returned success: true.
+- "I sent your details to our team" / "I emailed our team"
+unless the booking tool or human escalation service has actually dispatched the request.
+If the customer asks to speak with an executive, human, manager, or send their details to the sales team, acknowledge and execute the escalation directive truthfully.
 If calendar succeeds but email fails:
 - Say meeting is booked.
 - Inform user email failed.

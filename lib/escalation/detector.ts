@@ -11,7 +11,10 @@ export interface EscalationDetectionResult {
  * Deterministically analyzes user utterance to detect if escalation is required.
  * Distinguishes normal questions (handled by AI) from billing / human escalation.
  */
-export function detectEscalation(text: string): EscalationDetectionResult {
+export function detectEscalation(
+  text: string,
+  lastAssistantMessage?: string,
+): EscalationDetectionResult {
   const clean = text.trim();
   // Normalize smart quotes and unicode apostrophes
   const lower = clean
@@ -45,12 +48,69 @@ export function detectEscalation(text: string): EscalationDetectionResult {
     };
   }
 
-  // 3. Explicit Human Assistance Requests (HIGH / MEDIUM priority)
-  if (
-    /(?:talk|speak)\s+to\s+(?:a\s+)?(?:human|person|rep|representative|agent|manager|someone\s+else|sales\s+team)|need\s+(?:a\s+)?(?:human|real\s+person)|connect\s+me\s+with\s+(?:someone|a\s+person)|transfer\s+me\s+to/i.test(
-      lower,
-    )
-  ) {
+  // 3. Explicit Human Assistance / Sales Team Requests (HIGH priority)
+  const HUMAN_NOUNS =
+    '(?:human|person|rep|representative|agent|manager|executive|supervisor|lead|specialist|consultant|engineer|sales\\s*rep|sales\\s*team|support\\s*team|team|someone|someone\\s+else)';
+  const ARTICLES = '(?:a\\s+|an\\s+|the\\s+|your\\s+|some\\s+)?';
+
+  const talkSpeakMatch = new RegExp(
+    `(?:talk|speak|chat)\\s+(?:to|with)\\s+${ARTICLES}${HUMAN_NOUNS}`,
+    'i',
+  ).test(lower);
+
+  const realLiveMatch = new RegExp(
+    `(?:real|live)\\s+(?:person|human|agent|rep|representative|executive|someone)`,
+    'i',
+  ).test(lower);
+
+  const wantNeedMatch = new RegExp(
+    `(?:want|wanna|need|get|request)(?:\\s+to\\s+(?:talk|speak|chat)\\s+(?:to|with))?\\s+${ARTICLES}(?:human|real\\s+person|live\\s+person|live\\s+agent|real\\s+agent|rep|representative|executive|manager|supervisor|sales\\s*team)`,
+    'i',
+  ).test(lower);
+
+  const connectTransferMatch = new RegExp(
+    `(?:connect|transfer|pass)\\s+(?:me\\s+)?(?:to|with)\\s+${ARTICLES}${HUMAN_NOUNS}`,
+    'i',
+  ).test(lower);
+
+  const sendEmailMatch = new RegExp(
+    `(?:send|forward|dispatch|shoot|pass)\\s+(?:an?\\s+)?(?:email|mail|message|details?|info(?:rmation)?)\\s+to\\s+${ARTICLES}${HUMAN_NOUNS}`,
+    'i',
+  ).test(lower);
+
+  const emailTeamDirectMatch = new RegExp(
+    `(?:email|mail|contact|reach\\s+out\\s+to)\\s+${ARTICLES}(?:sales\\s*team|support\\s*team|team|executive|representative|rep)`,
+    'i',
+  ).test(lower);
+
+  const haveTeamContactMatch = new RegExp(
+    `(?:have|ask|get)\\s+${ARTICLES}(?:sales\\s*team|support\\s*team|team|rep|representative|executive|someone|agent)\\s+(?:to\\s+)?(?:contact|email|mail|call|reach\\s+out(?:\\s+to)?)\\s+(?:me|us)`,
+    'i',
+  ).test(lower);
+
+  const humanPleaseMatch = /\b(?:human|executive|representative|live\s+agent)\s+please\b/i.test(lower);
+
+  // User confirmed an assistant offer to escalate or contact sales team
+  const isAffirmation = /^(?:yes|yeah|yep|sure|please|please\s+do|go\s+ahead|do\s+it|confirm|okay|ok|sounds\s+good|definitely)\b/i.test(lower);
+  const assistantOfferedEscalation = Boolean(
+    lastAssistantMessage &&
+      /(?:send|forward|pass|escalate|contact|email).*(?:sales\\s*team|team|support|representative|executive|specialist)|(?:reach\\s+out\\s+to\\s+you|follow\\s+up\\s+with\\s+you)/i.test(
+        lastAssistantMessage,
+      ),
+  );
+
+  const isHumanRequest =
+    talkSpeakMatch ||
+    realLiveMatch ||
+    wantNeedMatch ||
+    connectTransferMatch ||
+    sendEmailMatch ||
+    emailTeamDirectMatch ||
+    haveTeamContactMatch ||
+    humanPleaseMatch ||
+    (isAffirmation && assistantOfferedEscalation);
+
+  if (isHumanRequest) {
     return {
       shouldEscalate: true,
       category: 'HUMAN_REQUEST',
